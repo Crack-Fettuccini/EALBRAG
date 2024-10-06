@@ -1,6 +1,6 @@
 
 #pip install huggingface-hub
-#huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct --include "original/*" --local-dir meta-llama/Meta-Llama-3-8B-Instruct
+#huggingface-cli download meta-llama/Llama-3.2-3B-Instruct --include "original/*" --local-dir meta-llama/Meta-Llama-3-8B-Instruct
 #pip install -U "huggingface_hub[cli]"
 #huggingface-cli login
 #python main.py
