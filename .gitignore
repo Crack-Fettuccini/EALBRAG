@@ -1,0 +1,8 @@
+/__pycache__/
+/Include/
+/Lib/
+/meta-llama/
+/Scripts/
+/share/
+pyvenv.cfg
+
