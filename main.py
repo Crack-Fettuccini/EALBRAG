@@ -1,8 +1,9 @@
 
 #pip install huggingface-hub
-
 #huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct --include "original/*" --local-dir meta-llama/Meta-Llama-3-8B-Instruct
-
+#pip install -U "huggingface_hub[cli]"
+#huggingface-cli login
+#python main.py
 #pip install -U transformers --upgrade
 #pip install accelerate
 import transformers
@@ -10,8 +11,8 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Initialize model and tokenizer
-model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+model_name = "meta-llama\\Meta-Llama-3-8B-Instruct\\original"
+tokenizer = AutoTokenizer.from_pretrained("meta-llama\\Meta-Llama-3-8B-Instruct\\original")
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
 
 model.config.output_attentions = True  # Enable attention tracking
@@ -55,6 +56,3 @@ if __name__ == "__main__":
         print(f"Attention for last token: {attentions[-1]}")  # Inspect the attention for the last token
 
 
-#pip install -U "huggingface_hub[cli]"
-#huggingface-cli login
-#python llama3-hf-demo.py
