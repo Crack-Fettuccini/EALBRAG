@@ -1,7 +1,15 @@
+#pip install huggingface-hub
+#huggingface-cli download meta-llama/Llama-3.2-3B-Instruct --include "original/*" --local-dir meta-llama/Llama-3.2-3B-Instruct
+#pip install -U "huggingface_hub[cli]"
+#huggingface-cli login
+#python main.py
+#pip install -U transformers --upgrade
+#pip install accelerate
 import transformers
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
+from transformers import BitsAndBytesConfig
 
 # Use pathlib to define the path to the model
 model_path = Path("meta-llama") / "Llama-3.2-3B-Instruct"
@@ -9,13 +17,19 @@ model_path = Path("meta-llama") / "Llama-3.2-3B-Instruct"
 # Check if CUDA is available and set device accordingly
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Create a BitsAndBytesConfig for 4-bit quantization
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,  # Optional: Enables double quantization for better performance
+    bnb_4bit_quant_type="fp4"  # You can also use 'nf4', check the documentation for details
+)
+
 # Initialize model and tokenizer with attention implementation specified
 tokenizer = AutoTokenizer.from_pretrained(str(model_path))  # Convert Path to string when passing to transformers
 model = AutoModelForCausalLM.from_pretrained(
     str(model_path),
-    torch_dtype=torch.float16,
-    device_map="auto",
-    attn_implementation="eager"  # Specify attention implementation
+    quantization_config=bnb_config,
+    device_map="auto"
 ).to(device)
 
 model.config.output_attentions = True  # Enable attention tracking
@@ -23,7 +37,8 @@ model.config.output_attentions = True  # Enable attention tracking
 conversation_history = ""  # To maintain conversation context
 
 def generate_token_with_attention(input_ids):
-    output = model(input_ids=input_ids, output_attentions=True)
+    with torch.no_grad():  # Disable gradient calculation
+        output = model(input_ids=input_ids, output_attentions=True)
     next_token_id = torch.argmax(output.logits[:, -1, :], dim=-1)  # Get next token
     attentions = output.attentions  # Attention across layers
     return next_token_id, attentions
