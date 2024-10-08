@@ -9,9 +9,14 @@ model_path = Path("meta-llama") / "Llama-3.2-3B-Instruct"
 # Check if CUDA is available and set device accordingly
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Initialize model and tokenizer
+# Initialize model and tokenizer with attention implementation specified
 tokenizer = AutoTokenizer.from_pretrained(str(model_path))  # Convert Path to string when passing to transformers
-model = AutoModelForCausalLM.from_pretrained(str(model_path), torch_dtype=torch.float16, device_map="auto").to(device)
+model = AutoModelForCausalLM.from_pretrained(
+    str(model_path),
+    torch_dtype=torch.float16,
+    device_map="auto",
+    attn_implementation="eager"  # Specify attention implementation
+).to(device)
 
 model.config.output_attentions = True  # Enable attention tracking
 
