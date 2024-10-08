@@ -1,11 +1,3 @@
-
-#pip install huggingface-hub
-#huggingface-cli download meta-llama/Llama-3.2-3B-Instruct --include "original/*" --local-dir meta-llama/Llama-3.2-3B-Instruct
-#pip install -U "huggingface_hub[cli]"
-#huggingface-cli login
-#python main.py
-#pip install -U transformers --upgrade
-#pip install accelerate
 import transformers
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -14,9 +6,12 @@ from pathlib import Path
 # Use pathlib to define the path to the model
 model_path = Path("meta-llama") / "Llama-3.2-3B-Instruct"
 
+# Check if CUDA is available and set device accordingly
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 # Initialize model and tokenizer
 tokenizer = AutoTokenizer.from_pretrained(str(model_path))  # Convert Path to string when passing to transformers
-model = AutoModelForCausalLM.from_pretrained(str(model_path), torch_dtype=torch.float16, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(str(model_path), torch_dtype=torch.float16, device_map="auto").to(device)
 
 model.config.output_attentions = True  # Enable attention tracking
 
@@ -31,7 +26,7 @@ def generate_token_with_attention(input_ids):
 def update_conversation(input_text):
     global conversation_history
     conversation_history += f"{input_text}\n"
-    return tokenizer(conversation_history, return_tensors="pt").input_ids.to("cuda")
+    return tokenizer(conversation_history, return_tensors="pt").input_ids.to(device)
 
 def generate_response(prompt, max_new_tokens=50):
     input_ids = update_conversation(prompt)
@@ -57,5 +52,3 @@ if __name__ == "__main__":
         response, attentions = generate_response(user_input)
         print(f"Llama: {response}")
         print(f"Attention for last token: {attentions[-1]}")  # Inspect the attention for the last token
-
-
