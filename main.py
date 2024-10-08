@@ -1,6 +1,6 @@
 
 #pip install huggingface-hub
-#huggingface-cli download meta-llama/Llama-3.2-3B-Instruct --include "original/*" --local-dir meta-llama/Meta-Llama-3-8B-Instruct
+#huggingface-cli download meta-llama/Llama-3.2-3B-Instruct --include "original/*" --local-dir meta-llama/Llama-3.2-3B-Instruct
 #pip install -U "huggingface_hub[cli]"
 #huggingface-cli login
 #python main.py
@@ -9,11 +9,14 @@
 import transformers
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from pathlib import Path
+
+# Use pathlib to define the path to the model
+model_path = Path("meta-llama") / "Llama-3.2-3B-Instruct"
 
 # Initialize model and tokenizer
-model_name = "meta-llama\\Meta-Llama-3-8B-Instruct\\original"
-tokenizer = AutoTokenizer.from_pretrained("meta-llama\\Meta-Llama-3-8B-Instruct\\original")
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(str(model_path))  # Convert Path to string when passing to transformers
+model = AutoModelForCausalLM.from_pretrained(str(model_path), torch_dtype=torch.float16, device_map="auto")
 
 model.config.output_attentions = True  # Enable attention tracking
 
