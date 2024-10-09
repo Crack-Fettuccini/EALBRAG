@@ -3,7 +3,7 @@ import torch
 from transformers import AutoTokenizer, LlamaForCausalLM
 
 class HyDE:
-    def __init__(self, model, tokenizer, device, max_length=512, num_documents=1):
+    def __init__(self, model, tokenizer, device, max_length=200, num_documents=1):
         """
         Initialize the HyDE module with a language model and tokenizer.
         :param model: Pretrained language model for generation
