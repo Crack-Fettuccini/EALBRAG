@@ -1,6 +1,7 @@
 # models/sliding_window.py
 import torch
 import torch.nn as nn
+import spacy
 
 class SlidingWindowManager:
     def __init__(self, window_size, device):
@@ -12,6 +13,7 @@ class SlidingWindowManager:
         self.window_size = window_size
         self.device = device
         self.reset_window()
+        self.nlp = spacy.load("en_core_web_sm")
 
     def reset_window(self):
         """
@@ -24,26 +26,32 @@ class SlidingWindowManager:
 
     def parse_prompt(self, prompt, tokenizer, max_tokens_part3):
         """
-        Parse the prompt to identify primary and secondary queries.
+        Parse the prompt to identify primary and secondary queries using spaCy.
         :param prompt: The full input prompt string.
         :param tokenizer: The tokenizer used for encoding.
         :param max_tokens_part3: Maximum tokens allocated for part 3.
         :return: List of tokens for part 3.
         """
-        # For simplicity, assume primary query is the main question,
-        # and secondary queries are additional inquiries.
-        # This can be enhanced using NLP techniques for better parsing.
+        doc = self.nlp(prompt)
+        queries = []
+        primary_query = ""
+        secondary_queries = []
 
-        # Example implementation:
-        # Split the prompt into sentences and identify queries.
+        # Identify sentences with interrogative clauses as queries
+        for sent in doc.sents:
+            if sent[-1].text == '?':
+                if not primary_query:
+                    primary_query = sent.text
+                else:
+                    secondary_queries.append(sent.text)
 
-        sentences = prompt.split('.')
-        queries = [s.strip() for s in sentences if '?' in s]
-        primary_query = queries[0] if queries else ""
-        secondary_queries = queries[1:] if len(queries) > 1 else []
+        # Combine primary and secondary queries
+        if primary_query:
+            queries.append(primary_query)
+        queries.extend(secondary_queries)
 
-        # Combine primary and secondary queries, limited by max_tokens_part3
-        combined_queries = primary_query + " " + " ".join(secondary_queries)
+        # Combine and encode
+        combined_queries = " ".join(queries)
         tokens = tokenizer.encode(combined_queries, add_special_tokens=False)
         tokens = tokens[:max_tokens_part3]  # Truncate if necessary
 
@@ -93,7 +101,6 @@ class SlidingWindowManager:
             print("Sliding Window: Flushing half of Part 1 (RAG and HyDE Data)")
         elif concentration_part2 > threshold:
             # Push response window by one token
-            # This requires managing part4 accordingly
             if len(self.part4) > 0:
                 self.part4 = self.part4[1:]
                 print("Sliding Window: Pushing Response Window by one token")
