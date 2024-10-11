@@ -98,6 +98,10 @@ print(response)
 
 Contributions are welcome! If you have any ideas, enhancements, or bug fixes, feel free to create a pull request.
 
+## License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+
 ## Acknowledgments
 
 - [Hugging Face](https://huggingface.co) for providing the Transformers library.
