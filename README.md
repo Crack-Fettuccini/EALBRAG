@@ -93,3 +93,14 @@ query = "Who are the smartest people in web development?"
 response = model.process_query(query)
 print(response)
 ```
+
+## Contribution
+
+Contributions are welcome! If you have any ideas, enhancements, or bug fixes, feel free to create a pull request.
+
+## Acknowledgments
+
+- [Hugging Face](https://huggingface.co) for providing the Transformers library.
+- PyTorch for deep learning capabilities.
+- The open-source community for their contributions to machine learning and natural language processing.
+```
