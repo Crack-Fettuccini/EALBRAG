@@ -2,9 +2,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from lstm_memory import LSTMMemory
 
 class MemoryBank(nn.Module):
-    def __init__(self, embed_dim, max_memory_size=1000, lstm_hidden_size=256, num_layers=1):
+    def __init__(self, embed_dim, max_memory_size=1000, lstm_hidden_size=512, num_layers=1):
         """
         Initializes the MemoryBank with LSTM for long-term memory.
         :param embed_dim: Dimensionality of the embeddings.
@@ -15,12 +16,10 @@ class MemoryBank(nn.Module):
         super(MemoryBank, self).__init__()
         self.embed_dim = embed_dim
         self.max_memory_size = max_memory_size
-        self.lstm_hidden_size = lstm_hidden_size
-        self.num_layers = num_layers
         
-        # LSTM for memory handling
-        self.lstm = nn.LSTM(embed_dim, lstm_hidden_size, num_layers=num_layers, batch_first=True)
-
+        # Initialize LSTM Memory
+        self.lstm_memory = LSTMMemory(embed_dim, hidden_dim=lstm_hidden_size, num_layers=num_layers)
+        
         # Initialize keys and values
         self.keys = torch.zeros((max_memory_size, embed_dim)).to(torch.float32)
         self.values = torch.zeros((max_memory_size, embed_dim)).to(torch.float32)
@@ -28,7 +27,7 @@ class MemoryBank(nn.Module):
 
     def update_memory(self, keys, values, attention_scores, threshold=0.5):
         """
-        Updates the memory bank based on attention scores and stores in LSTM.
+        Updates the memory bank based on attention scores.
         :param keys: Tensor of shape (batch, seq_len, embed_dim)
         :param values: Tensor of shape (batch, seq_len, embed_dim)
         :param attention_scores: Tensor of shape (batch, seq_len)
@@ -54,13 +53,17 @@ class MemoryBank(nn.Module):
             selected_keys = selected_keys[:available_space]
             selected_values = selected_values[:available_space]
 
-        # Store selected keys and values in LSTM
+        # Pass selected keys through LSTM Memory
         if selected_keys.size(0) > 0:
-            lstm_input = selected_keys.unsqueeze(1)  # Add sequence dimension
-            lstm_out, _ = self.lstm(lstm_input)
-            self.keys[self.current_size:self.current_size + lstm_out.size(1)] = lstm_out[:, -1, :]  # Store last LSTM output
-            self.values[self.current_size:self.current_size + lstm_out.size(1)] = selected_values[:lstm_out.size(1)]
-            self.current_size += lstm_out.size(1)
+            # Add batch dimension if necessary
+            lstm_input = selected_keys.unsqueeze(0)  # (1, num_selected, embed_dim)
+            memory_outputs, _ = self.lstm_memory(lstm_input)  # (1, num_selected, embed_dim)
+            memory_outputs = memory_outputs.squeeze(0)  # (num_selected, embed_dim)
+
+            # Store into memory
+            self.keys[self.current_size:self.current_size + memory_outputs.size(0)] = memory_outputs
+            self.values[self.current_size:self.current_size + selected_values.size(0)] = selected_values
+            self.current_size += memory_outputs.size(0)
 
     def retrieve_memory(self, query_embeddings, top_k=5):
         """
@@ -80,7 +83,7 @@ class MemoryBank(nn.Module):
         similarities = torch.matmul(query_norm, memory_keys.T)  # (batch, current_size)
 
         # Get top-k indices
-        topk_values, topk_indices = torch.topk(similarities, top_k, dim=-1, largest=True, sorted=True)  # (batch, top_k)
+        topk_values, topk_indices = torch.topk(similarities, top_k, dim=-1)  # (batch, top_k)
 
         # Gather the corresponding values
         retrieved_values = self.values[topk_indices]  # (batch, top_k, embed_dim)
@@ -94,3 +97,4 @@ class MemoryBank(nn.Module):
         self.current_size = 0
         self.keys = torch.zeros((self.max_memory_size, self.embed_dim)).to(torch.float32)
         self.values = torch.zeros((self.max_memory_size, self.embed_dim)).to(torch.float32)
+        self.lstm_memory.reset_parameters()
