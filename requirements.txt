@@ -21,6 +21,7 @@ huggingface-hub==0.25.1
 idna==3.10
 inquirerpy==0.3.4
 Jinja2==3.1.4
+joblib==1.4.2
 kiwisolver==1.4.7
 langcodes==3.4.1
 language_data==1.2.0
@@ -35,6 +36,7 @@ murmurhash==1.0.10
 networkx==3.3
 numpy==2.0.2
 packaging==24.1
+peft==0.13.2
 pfzy==0.3.4
 pillow==10.4.0
 preshed==3.0.9
@@ -52,6 +54,8 @@ regex==2024.9.11
 requests==2.32.3
 rich==13.9.2
 safetensors==0.4.5
+scikit-learn==1.5.2
+scipy==1.14.1
 sentencepiece==0.2.0
 setuptools==75.1.0
 shellingham==1.5.4
@@ -63,6 +67,7 @@ spacy-loggers==1.0.5
 srsly==2.4.8
 sympy==1.13.3
 thinc==8.3.2
+threadpoolctl==3.5.0
 tiktoken==0.8.0
 tokenizers==0.20.0
 torch==2.4.1
