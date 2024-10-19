@@ -3,10 +3,13 @@ from transformers import LlamaForCausalLM, LlamaTokenizer
 import yaml
 import os
 import logging
-from typing import List, Optional
+from typing import List
 from utils.cache import SimpleCache
 from utils.privacy import PrivacySanitizer
 from database.user_profile_db import UserProfileDB
+from utils.summarizer import Summarizer  # Summarization module
+from utils.trend_analyzer import TrendAnalyzer  # Trend analysis module
+from peft import LoRA  # Parameter-efficient tuning (PEFT)
 
 class HyPE:
     def __init__(self, config_path: str = "config/config.yaml"):
@@ -31,6 +34,11 @@ class HyPE:
         self.temperature = self.config['model']['temperature']
         self.top_p = self.config['model']['top_p']
         
+        # Initialize PEFT (LoRA)
+        if self.config['peft']['enabled']:
+            self.model = LoRA(self.model, r=self.config['peft']['rank'], alpha=self.config['peft']['alpha'])
+            self.logger.info("PEFT (LoRA) initialized.")
+        
         # Initialize PrivacySanitizer
         if self.config['privacy']['enabled']:
             self.privacy_sanitizer = PrivacySanitizer(self.config['privacy'])
@@ -51,23 +59,19 @@ class HyPE:
         self.db = UserProfileDB(self.config['database']['connection_string'])
         self.logger.info("UserProfileDB initialized.")
         
+        # Initialize summarizer and trend analyzer
+        self.summarizer = Summarizer(self.config['summarization'])
+        self.trend_analyzer = TrendAnalyzer(self.config['trend_analysis'])
+        
         self.logger.info("HyPE initialized successfully.")
     
     def setup_logging(self):
         """
         Setup logging based on configuration.
         """
-        # Load temporary config for logging
-        temp_config = {}
-        try:
-            with open("config/config.yaml", 'r') as file:
-                temp_config = yaml.safe_load(file)
-        except Exception as e:
-            print(f"Failed to load logging configuration: {e}")
-        
-        log_level_str = temp_config.get('logging', {}).get('level', 'INFO').upper()
+        log_level_str = self.config.get('logging', {}).get('level', 'INFO').upper()
         log_level = getattr(logging, log_level_str, logging.INFO)
-        log_file = temp_config.get('logging', {}).get('log_file', 'hype.log')
+        log_file = self.config.get('logging', {}).get('log_file', 'hype.log')
         logging.basicConfig(
             level=log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -93,8 +97,16 @@ class HyPE:
             sanitized_history = conversation_history
             sanitized_docs = retrieved_docs
         
-        # Combine conversation history and retrieved documents to form the context
-        context = "\n".join(sanitized_history) + "\n" + "\n".join(sanitized_docs)
+        # Summarize conversation history to handle large contexts
+        summarized_history = self.summarizer.summarize_conversation(sanitized_history)
+        self.logger.debug("Conversation history summarized.")
+        
+        # Perform trend analysis to capture key trends in conversation history
+        trends = self.trend_analyzer.analyze_trends(sanitized_history)
+        self.logger.debug("Trend analysis complete.")
+        
+        # Combine summarized history, trends, and retrieved documents to form the context
+        context = "\n".join(summarized_history) + "\n" + "\n".join(sanitized_docs) + "\n" + "\n".join(trends)
         
         # Check cache
         cache_key = self._generate_cache_key(context)
@@ -104,7 +116,7 @@ class HyPE:
         
         # Define the prompt for generating Hypothetical Ground Truths
         prompt = (
-            f"You are an intelligent assistant analyzing the following conversation history and retrieved documents to uncover personal information.\n\n"
+            f"You are an intelligent assistant analyzing the following summarized conversation and retrieved documents.\n\n"
             f"Conversation History:\n{context}\n\n"
             f"Based on the above, generate a detailed Hypothetical Ground Truth that summarizes the user's profile, interests, and relevant personal information to enhance future responses.\n\n"
             f"Hypothetical Ground Truth:"
@@ -158,7 +170,7 @@ class HyPE:
     def _generate_cache_key(self, context: str) -> str:
         """
         Generate a unique cache key based on the context.
-        :param context: Combined conversation history and retrieved documents.
+        :param context: Combined conversation history, trends, and retrieved documents.
         :return: Cache key string.
         """
         import hashlib
