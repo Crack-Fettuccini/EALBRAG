@@ -1,0 +1,12 @@
+privacy:
+  enabled: true
+  local_key_path: "/path/to/local/key"  # Local key to disable sanitization for local access
+  prohibited_data_types_patterns:
+    sensitive_information:
+      - '\b\d{3}-\d{2}-\d{4}\b'  # SSN pattern
+      - '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'  # Email pattern
+    financial_data:
+      - '\$\d+(\.\d{2})?'  # Dollar amounts pattern
+  replacement_strings:
+    sensitive_information: "[REDACTED SENSITIVE INFO]"
+    financial_data: "[REDACTED FINANCIAL INFO]"
