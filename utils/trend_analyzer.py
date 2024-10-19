@@ -8,6 +8,9 @@ class TrendAnalyzer:
         Initializes the trend analyzer with the Llama tokenizer and spaCy model.
         :param config: Configuration dictionary for trend analysis.
         """
+        # Extract relevant config for TrendAnalyzer
+        trend_analyzer_config = config.get('trend_analyzer', {})
+
         self.tokenizer = LlamaTokenizer.from_pretrained(config.get('llama_model_name', 'NousResearch/Llama-3.2-1B'))
         self.nlp = spacy.load(config.get('spacy_model', 'en_core_web_sm'))
         self.top_n_keywords = config.get('top_n_keywords', 10)
