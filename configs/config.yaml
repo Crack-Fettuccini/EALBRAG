@@ -32,3 +32,9 @@ logging:
 database:
   type: "sqlite"  # or "postgresql", etc.
   connection_string: "sqlite:///./user_profiles.db"
+
+trend_analyzer:
+  llama_model_name: "NousResearch/Llama-3.2-1B"  # Model name for Llama tokenizer
+  spacy_model: "en_core_web_sm"  # SpaCy model for entity recognition
+  top_n_keywords: 10  # Number of top trends (tokens and entities) to return
+  entity_types: ['PERSON', 'ORG', 'GPE', 'DATE', 'EVENT']  # Types of entities to track
