@@ -1,16 +1,25 @@
 import os
+import sys
 import torch
-from transformers import AutoTokenizer, LlamaForCausalLM
+import logging
+import argparse
+from configs.config import CONFIG
 from training.train import train_model
 from training.generate import generate_text
-from configs.config import CONFIG
+from utils.privacy import PrivacySanitizer
+from models.memory import MemoryBank
 from models.knowledge_base import KnowledgeBase
-from models.memory import Memory
 from models.sliding_window import SlidingWindowManager
+from transformers import AutoTokenizer, LlamaForCausalLM
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+
 
 def main():
-    import argparse
-    import sys
+    config_path = 'config/config.yaml'
+    sanitizer = PrivacySanitizer(config_path)
 
     parser = argparse.ArgumentParser(description='Shakespeare RAG with HyDE, Extrapolator, Sliding Window, and Memory')
     parser.add_argument('--task', choices=['train', 'generate'], required=True, help='Task to perform: train or generate')
@@ -40,11 +49,11 @@ def main():
 
     # Initialize Knowledge Base
     print("Initializing Knowledge Base...")
-    knowledge_base = KnowledgeBase(documents_path="data/documents", embedder_model_name=model_name, device=device)
+    knowledge_base = KnowledgeBase(documents_path="data/documents", embedder_model_name=model_name)#, device=device)
 
     # Initialize Memory
     print("Initializing Memory...")
-    memory = Memory(embed_dim=CONFIG['embedding_dim'], memory_size=CONFIG['memory_size'], device=device)
+    memory = MemoryBank(embed_dim=CONFIG['embedding_dim'], memory_size=CONFIG['memory_size'], device=device)
 
     # Initialize Sliding Window Manager
     print("Initializing Sliding Window Manager...")
