@@ -7,17 +7,22 @@ import os
 class PrivacySanitizer:
     """
     A class to handle sanitization of input texts based on configurable privacy rules.
+    Sanitization is only applied if the data is non-local (i.e., key is not present on the device).
     """
 
     def __init__(self, config: Dict[str, Any]):
         """
-        Initialize the PrivacySanitizer with given configuration.
-
+        Initialize the PrivacySanitizer with given configuration and key.
+        The key is embedded within the device for local-only processing.
+        
         :param config: Dictionary containing privacy settings.
         """
         self.logger = logging.getLogger(__name__)
         self.config = config
         self.patterns = self._load_patterns(config)
+        
+        # Hardcoding the path to the local key on the device
+        self.key_path = '/secure/local/device_key'  # Local key embedded in the device
         self._compile_patterns()
 
     def _load_patterns(self, config: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -44,16 +49,35 @@ class PrivacySanitizer:
                     self.logger.error(f"Invalid regex pattern for {data_type}: {pattern} | Error: {e}")
         self.logger.debug("All regex patterns compiled successfully.")
 
+    def is_local(self) -> bool:
+        """
+        Check if the processing is happening on a local device by verifying the presence of the embedded key.
+        
+        :return: True if the key exists (indicating local processing), False otherwise.
+        """
+        # Check if the local key exists on the device
+        if os.path.exists(self.key_path):
+            self.logger.info(f"Local key found at {self.key_path}. Processing locally.")
+            return True
+        else:
+            self.logger.warning(f"Local key not found at {self.key_path}. Sanitization will be applied.")
+            return False
+
     def sanitize_input(self, text: str) -> str:
         """
-        Sanitize input text by redacting prohibited data types.
+        Sanitize input text by redacting prohibited data types only if non-local processing is detected.
 
         :param text: The input text to sanitize.
-        :return: Sanitized text.
+        :return: Sanitized text (if non-local) or original text (if local).
         """
         if not isinstance(text, str):
             self.logger.warning(f"Expected string input, got {type(text)}. Converting to string.")
             text = str(text)
+
+        # Only sanitize if not local
+        if self.is_local():
+            self.logger.info("Processing locally, no sanitization applied.")
+            return text  # Do not sanitize if processing locally.
 
         sanitized_text = text
         for data_type, patterns in self.compiled_patterns.items():
@@ -68,7 +92,7 @@ class PrivacySanitizer:
         Validate and sanitize the generated ground truth.
 
         :param text: Generated ground truth text.
-        :return: Validated ground truth text.
+        :return: Validated ground truth text (sanitized if non-local).
         """
         return self.sanitize_input(text)
 
