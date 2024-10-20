@@ -1,11 +1,10 @@
-# models/memory_attention.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models.memory import MemoryBank
 
 class MemoryAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, memory_size=1000, lstm_hidden_size=256, num_lstm_layers=1):
+    def __init__(self, embed_dim, num_heads, memory_size=1000, lstm_hidden_size=256, num_lstm_layers=1, dropout=0.1):
         """
         Initializes the MemoryAttention module.
         :param embed_dim: Dimensionality of the embeddings.
@@ -13,6 +12,7 @@ class MemoryAttention(nn.Module):
         :param memory_size: Maximum number of memory slots.
         :param lstm_hidden_size: Number of features in the hidden state of the LSTM.
         :param num_lstm_layers: Number of recurrent layers in the LSTM.
+        :param dropout: Dropout rate applied after attention.
         """
         super(MemoryAttention, self).__init__()
         self.embed_dim = embed_dim
@@ -39,6 +39,12 @@ class MemoryAttention(nn.Module):
             num_layers=num_lstm_layers
         )
         
+        # Dropout layer
+        self.dropout = nn.Dropout(dropout)
+        
+        # Layer normalization for stability
+        self.layer_norm = nn.LayerNorm(embed_dim)
+
     def forward(self, query, key, value, attention_mask=None):
         """
         Forward pass for the MemoryAttention mechanism.
@@ -68,7 +74,7 @@ class MemoryAttention(nn.Module):
             attn_scores = attn_scores.masked_fill(attention_mask == 0, float('-inf'))
         
         attn_weights = F.softmax(attn_scores, dim=-1)  # (batch, num_heads, query_len, key_len)
-        attn_weights = F.dropout(attn_weights, p=0.1, training=self.training)
+        attn_weights = self.dropout(attn_weights)
         
         # Compute attention output
         attn_output = torch.matmul(attn_weights, values)  # (batch, num_heads, query_len, head_dim)
@@ -79,8 +85,10 @@ class MemoryAttention(nn.Module):
         # Final linear projection
         attn_output = self.out_proj(attn_output)  # (batch, query_len, embed_dim)
         
+        # Apply layer normalization
+        attn_output = self.layer_norm(attn_output)
+        
         # Integrate Memory Bank
-        # Retrieve memory based on query embeddings
         memory_values = self.memory_bank.retrieve_memory(query.mean(dim=1))  # (batch, top_k, embed_dim)
         
         if memory_values is not None:
@@ -98,11 +106,11 @@ class MemoryAttention(nn.Module):
             memory_attn_scores = torch.matmul(queries, memory_keys.transpose(-2, -1)) * self.scale  # (batch, num_heads, query_len, top_k)
             
             # Combine with existing attention scores
-            combined_attn_scores = attn_scores + memory_attn_scores  # (batch, num_heads, query_len, key_len + top_k)
+            combined_attn_scores = torch.cat((attn_scores, memory_attn_scores), dim=-1)  # (batch, num_heads, query_len, key_len + top_k)
             
             # Update attention weights
             combined_attn_weights = F.softmax(combined_attn_scores, dim=-1)  # (batch, num_heads, query_len, key_len + top_k)
-            combined_attn_weights = F.dropout(combined_attn_weights, p=0.1, training=self.training)
+            combined_attn_weights = self.dropout(combined_attn_weights)
             
             # Concatenate values with memory values
             combined_values = torch.cat([values, memory_values], dim=2)  # (batch, num_heads, key_len + top_k, head_dim)
