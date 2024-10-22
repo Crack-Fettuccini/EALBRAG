@@ -47,14 +47,14 @@ class QueryReconstructor(nn.Module):
         """
         return self.reconstruct_query(query_tokens, rag_scores, attention_mask)
 
-# Example usage:
-if __name__ == "__main__":
-    # Example input
-    query_tokens = torch.tensor([[101, 3452, 2054, 999, 102, 0], [101, 2129, 2003, 1996, 3185, 102]])
-    rag_scores = torch.tensor([[0.2, 0.5, 0.1, 0.8, 0.4, -float('inf')], [0.3, 0.7, 0.4, 0.9, 0.2, 0.6]])
-    attention_mask = torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 1]])  # Masking the padding tokens in the first query
+# # Example usage:
+# if __name__ == "__main__":
+#     # Example input
+#     query_tokens = torch.tensor([[101, 3452, 2054, 999, 102, 0], [101, 2129, 2003, 1996, 3185, 102]])
+#     rag_scores = torch.tensor([[0.2, 0.5, 0.1, 0.8, 0.4, -float('inf')], [0.3, 0.7, 0.4, 0.9, 0.2, 0.6]])
+#     attention_mask = torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 1]])  # Masking the padding tokens in the first query
 
-    model = QueryReconstructor(ignore_special_tokens=True, pad_token_id=0)
-    reordered_queries = model(query_tokens, rag_scores, attention_mask)
+#     model = QueryReconstructor(ignore_special_tokens=True, pad_token_id=0)
+#     reordered_queries = model(query_tokens, rag_scores, attention_mask)
 
-    print("Reordered Queries:\n", reordered_queries)
+#     print("Reordered Queries:\n", reordered_queries)
