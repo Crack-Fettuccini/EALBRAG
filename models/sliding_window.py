@@ -1,4 +1,3 @@
-# models/sliding_window.py
 import torch
 
 class SlidingWindowManager:
@@ -18,91 +17,122 @@ class SlidingWindowManager:
         self.max_tokens_part2 = max_tokens_part2
         self.max_tokens_part3 = max_tokens_part3
         self.max_tokens_part4 = max_tokens_part4
-        
+
         self.reset_window()
-    
+
     def reset_window(self):
-        """
-        Reset the sliding window to its initial state.
-        """
-        self.part1 = []  # RAG and HyDE Data
-        self.part2 = []  # Prompted Data
-        self.part3 = []  # Primary and Secondary Queries
-        self.part4 = []  # Response
+        """Reset the sliding window to its initial state."""
+        self.parts = {
+            'part1': [],  # RAG and HyDE Data
+            'part2': [],  # Prompted Data
+            'part3': [],  # Primary and Secondary Queries
+            'part4': [],  # Response
+        }
     
-    def parse_prompt(self, prompt, tokenizer, max_tokens_part3):
+    def tokenize_text(self, text, tokenizer, max_tokens):
+        """
+        Tokenizes and truncates the input text.
+        :param text: Input string.
+        :param tokenizer: Tokenizer object.
+        :param max_tokens: Maximum tokens to use for truncation.
+        :return: List of tokenized ids.
+        """
+        tokens = tokenizer.encode(text, add_special_tokens=False)
+        return tokens[:max_tokens]
+
+    def parse_prompt(self, prompt, tokenizer):
         """
         Parse the prompt to identify primary and secondary queries.
         :param prompt: The full input prompt string.
         :param tokenizer: The tokenizer used for encoding.
-        :param max_tokens_part3: Maximum tokens allocated for part 3.
-        :return: List of tokens for part 3.
+        :return: List of tokens for the queries.
         """
-        # For simplicity, assume primary query is the main question,
-        # and secondary queries are additional inquiries.
-        # This can be enhanced using NLP techniques for better parsing.
-
-        # Example implementation:
-        # Split the prompt into sentences and identify queries.
-
         sentences = prompt.split('.')
         queries = [s.strip() for s in sentences if '?' in s]
         primary_query = queries[0] if queries else ""
         secondary_queries = queries[1:] if len(queries) > 1 else []
 
-        # Combine primary and secondary queries, limited by max_tokens_part3
+        # Combine primary and secondary queries
         combined_queries = primary_query + " " + " ".join(secondary_queries)
-        tokens = tokenizer.encode(combined_queries, add_special_tokens=False)
-        tokens = tokens[:max_tokens_part3]  # Truncate if necessary
-
+        tokens = self.tokenize_text(combined_queries, tokenizer, self.max_tokens_part3)
         return tokens
 
-    def fill_parts(self, tokens_part3, tokens_part1):
+    def fill_parts(self, tokens_part1, tokens_part3):
         """
         Fill the sliding window parts with tokens.
-        :param tokens_part3: Primary and secondary query tokens.
         :param tokens_part1: RAG and HyDE data tokens.
+        :param tokens_part3: Primary and secondary query tokens.
         """
-        # Fill Part 3
-        self.part3 = tokens_part3
-
-        # Fill Part 1 with RAG and HyDE data
-        self.part1 = tokens_part1[:self.max_tokens_part1]
-
-        # Fill Part 2 with prompted data (can be extended as needed)
-        self.part2 = []  # Initialize as empty or fill with additional context if available
-
-        # Initialize Part 4 (Response) as empty
-        self.part4 = []
+        # Fill the relevant parts
+        self.parts['part1'] = tokens_part1[:self.max_tokens_part1]
+        self.parts['part3'] = tokens_part3[:self.max_tokens_part3]
+        
+        # Ensure part2 and part4 are initialized
+        self.parts['part2'] = []  # Example context or prompted data
+        self.parts['part4'] = []  # Response window starts empty
 
     def get_combined_query(self):
         """
         Combine all parts into a single query.
         :return: Combined token list.
         """
-        combined = self.part1 + self.part2 + self.part3 + self.part4
-        return combined[:self.window_size]  # Ensure it doesn't exceed window size
+        combined = []
+        for part in self.parts.values():
+            combined.extend(part)
+        
+        return combined[:self.window_size]  # Ensure total length doesn't exceed window size
 
     def update_window_attention(self, attention_scores_part1, attention_scores_part2):
         """
-        Update the sliding window based on attention scores.
+        Dynamically update the sliding window based on attention scores.
         :param attention_scores_part1: Attention scores for part1.
         :param attention_scores_part2: Attention scores for part2.
         """
-        # Calculate attention concentration towards the end of parts
-        concentration_part1 = attention_scores_part1[:, -1].mean().item() if attention_scores_part1.numel() > 0 else 0
-        concentration_part2 = attention_scores_part2[:, -1].mean().item() if attention_scores_part2.numel() > 0 else 0
-
-        # Define a threshold for concentration (e.g., 0.5)
+        concentration_part1 = self.calculate_attention_concentration(attention_scores_part1)
+        concentration_part2 = self.calculate_attention_concentration(attention_scores_part2)
+        
+        # Threshold to decide whether to flush or shift windows
         threshold = 0.5
 
         if concentration_part1 > threshold:
-            # Flush half of part1
-            half_length = len(self.part1) // 2
-            self.part1 = self.part1[half_length:]
-            print("Sliding Window: Flushing half of Part 1 (RAG and HyDE Data)")
+            self.flush_window('part1')
         elif concentration_part2 > threshold:
-            # Push response window by one token
-            if len(self.part4) > 0:
-                self.part4 = self.part4[1:]
-                print("Sliding Window: Pushing Response Window by one token")
+            self.shift_response_window()
+
+    def calculate_attention_concentration(self, attention_scores):
+        """
+        Calculate the attention concentration towards the end of a sequence.
+        :param attention_scores: Attention scores tensor for a specific part.
+        :return: Attention concentration score.
+        """
+        if attention_scores.numel() == 0:
+            return 0
+        
+        # Average the attention at the last position
+        return attention_scores[:, -1].mean().item()
+
+    def flush_window(self, part_key):
+        """
+        Flush half of the tokens from the specified part of the window.
+        :param part_key: The key for the part to flush.
+        """
+        half_length = len(self.parts[part_key]) // 2
+        self.parts[part_key] = self.parts[part_key][half_length:]
+        print(f"Sliding Window: Flushed half of {part_key}.")
+
+    def shift_response_window(self):
+        """
+        Push the response window by one token, simulating a sliding window.
+        """
+        if len(self.parts['part4']) > 0:
+            self.parts['part4'] = self.parts['part4'][1:]
+            print("Sliding Window: Shifted the Response Window by one token.")
+
+    def add_response_tokens(self, response_tokens):
+        """
+        Add new tokens to the response part of the window.
+        :param response_tokens: List of tokenized response tokens.
+        """
+        self.parts['part4'].extend(response_tokens)
+        if len(self.parts['part4']) > self.max_tokens_part4:
+            self.parts['part4'] = self.parts['part4'][-self.max_tokens_part4:]  # Keep only the latest tokens
