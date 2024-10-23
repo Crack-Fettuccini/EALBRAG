@@ -1,11 +1,14 @@
 import os
 import torch
+import hashlib
 from transformers import AutoTokenizer, AutoModel
 from models.embedder import TokenEmbedder
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from sklearn.metrics.pairwise import cosine_similarity
 import logging
+import json
+
 
 class KnowledgeBase:
     def __init__(self, documents_path, embedder_model_name, device, embedding_dim=128, batch_size=8, cache_file=None, max_length=512):
@@ -34,9 +37,12 @@ class KnowledgeBase:
 
         self.embedder.eval()  # Set embedder to evaluation mode
 
-        # Attempt to load cached embeddings, otherwise, load documents and compute embeddings
+        # Track document hashes for change detection
+        self.document_hashes = {}
+
+        # Load cached embeddings if available
         if cache_file and os.path.exists(cache_file):
-            self.load_embeddings(cache_file)
+            self.load_cache(cache_file)
         else:
             self.documents, self.document_metadata = self.load_documents()
             self.embeddings = self.embed_documents()
@@ -44,6 +50,7 @@ class KnowledgeBase:
     def load_documents(self):
         """
         Load all text documents from the documents directory and gather metadata.
+        This also computes hashes of the document contents to detect changes later.
         :return: Tuple of (document strings list, metadata list).
         """
         documents = []
@@ -55,12 +62,26 @@ class KnowledgeBase:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         content = f.read().strip()
                         if content:
+                            doc_hash = self._hash_document(content)
                             documents.append(content)
-                            metadata.append({"filename": filename, "filepath": filepath})
+                            metadata.append({
+                                "filename": filename, 
+                                "filepath": filepath, 
+                                "hash": doc_hash
+                            })
+                            self.document_hashes[filename] = doc_hash
                 except Exception as e:
                     logging.error(f"Error reading {filepath}: {e}")
         logging.info(f"Loaded {len(documents)} documents from {self.documents_path}.")
         return documents, metadata
+
+    def _hash_document(self, document: str) -> str:
+        """
+        Generate a unique hash for a document's content to track changes.
+        :param document: The document content as a string.
+        :return: SHA256 hash of the document content.
+        """
+        return hashlib.sha256(document.encode('utf-8')).hexdigest()
 
     def embed_documents(self):
         """
@@ -128,21 +149,49 @@ class KnowledgeBase:
         """
         return self.document_metadata
 
-    def save_embeddings(self, file_path):
+    def save_cache(self, file_path):
         """
-        Save the document embeddings to a file for later use.
-        :param file_path: Path to the output file.
+        Save the document embeddings and metadata to a cache file for later use.
+        :param file_path: Path to the output cache file.
         """
-        torch.save(self.embeddings, file_path)
-        logging.info(f"Saved embeddings to {file_path}.")
+        cache_data = {
+            "embeddings": self.embeddings.cpu().numpy().tolist(),
+            "document_metadata": self.document_metadata,
+            "document_hashes": self.document_hashes
+        }
+        with open(file_path, 'w') as f:
+            json.dump(cache_data, f)
+        logging.info(f"Saved embeddings and metadata to {file_path}.")
 
-    def load_embeddings(self, file_path):
+    def load_cache(self, file_path):
         """
-        Load precomputed document embeddings from a file.
-        :param file_path: Path to the embeddings file.
+        Load precomputed document embeddings and metadata from a cache file.
+        :param file_path: Path to the cache file.
         """
-        self.embeddings = torch.load(file_path)
-        logging.info(f"Loaded embeddings from {file_path}.")
+        with open(file_path, 'r') as f:
+            cache_data = json.load(f)
+            self.embeddings = torch.tensor(cache_data["embeddings"]).to(self.device)
+            self.document_metadata = cache_data["document_metadata"]
+            self.document_hashes = cache_data["document_hashes"]
+        logging.info(f"Loaded embeddings and metadata from {file_path}.")
+
+    def update_embeddings(self):
+        """
+        Recheck the document folder and update embeddings only for documents that have changed.
+        """
+        new_documents, new_metadata = self.load_documents()
+        updated = False
+
+        for i, (new_doc, new_meta) in enumerate(zip(new_documents, new_metadata)):
+            old_hash = self.document_hashes.get(new_meta['filename'])
+            if old_hash != new_meta['hash']:
+                logging.info(f"Document {new_meta['filename']} has changed, updating embedding.")
+                new_embedding = self.embed_documents([new_doc])
+                self.embeddings[i] = new_embedding
+                updated = True
+        
+        if updated and self.cache_file:
+            self.save_cache(self.cache_file)  # Save the updated embeddings to cache
 
     def find_similar_documents(self, query, top_k=5):
         """
@@ -184,3 +233,4 @@ class KnowledgeBase:
         similar_documents = self.find_similar_documents(query, top_k)
         for i, (doc_meta, score) in enumerate(similar_documents):
             print(f"Rank {i+1}: {doc_meta['filename']} (Similarity: {score:.4f})")
+
