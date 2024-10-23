@@ -10,6 +10,7 @@ from database.user_profile_db import UserProfileDB
 from utils.summarizer import Summarizer  # Summarization module
 from utils.trend_analyzer import TrendAnalyzer  # Trend analysis module
 from peft import LoRA  # Parameter-efficient tuning (PEFT)
+from sklearn.metrics.pairwise import cosine_similarity
 
 class HyPE:
     def __init__(self, config_path: str = "config/config.yaml"):
@@ -204,14 +205,44 @@ class HyPE:
 
     def _is_similar(self, gt1: str, gt2: str) -> bool:
         """
-        Check if two ground truths are similar.
-        This can be implemented using semantic similarity, e.g., cosine similarity between embeddings.
+        Check if two ground truths are similar using cosine similarity between their embeddings.
         :param gt1: Ground truth 1.
         :param gt2: Ground truth 2.
         :return: Boolean indicating whether they are similar.
         """
-        # For simplicity, using exact match. This can be replaced with a more advanced similarity check.
-        return gt1 == gt2
+        # Tokenize and generate embeddings for both ground truths
+        gt1_embedding = self._get_embedding(gt1)
+        gt2_embedding = self._get_embedding(gt2)
+        
+        # Calculate cosine similarity between the embeddings
+        similarity_score = cosine_similarity(gt1_embedding, gt2_embedding)[0][0]
+        
+        # Define a threshold for similarity (e.g., 0.85 is a common threshold)
+        similarity_threshold = self.config.get('similarity_threshold', 0.85)
+        
+        return similarity_score >= similarity_threshold
+
+    def _get_embedding(self, text: str) -> torch.Tensor:
+        """
+        Generate the embedding for a given text using the model's hidden states.
+        :param text: Input text to generate the embedding for.
+        :return: Embedding tensor for the text.
+        """
+        # Tokenize the input text
+        inputs = self.tokenizer.encode(text, return_tensors="pt").to(self.device)
+        
+        # Pass the input through the model to get hidden states
+        with torch.no_grad():
+            outputs = self.model(inputs, output_hidden_states=True)
+        
+        # Get the last hidden state (embedding of the sequence)
+        hidden_states = outputs.hidden_states[-1]  # Last layer's hidden states
+        
+        # Average the hidden states across all tokens to get a single vector representation
+        embedding = hidden_states.mean(dim=1)  # Shape: (batch_size, hidden_dim)
+        
+        # Convert to numpy for cosine similarity
+        return embedding.cpu().numpy()
 
     def _generate_cache_key(self, context: str) -> str:
         """
