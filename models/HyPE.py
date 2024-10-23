@@ -84,9 +84,7 @@ class HyPE:
     def generate_hypothetical_ground_truths(self, conversation_history: List[str], retrieved_docs: List[str]) -> List[str]:
         """
         Generate Hypothetical Ground Truths based on conversation history and retrieved documents.
-        :param conversation_history: List of past conversation strings.
-        :param retrieved_docs: List of retrieved document strings.
-        :return: List of generated Hypothetical Ground Truths.
+        Recheck existing data and only update if the confidence score is high enough.
         """
         # Sanitize inputs for privacy
         if self.privacy_sanitizer:
@@ -97,15 +95,15 @@ class HyPE:
             sanitized_history = conversation_history
             sanitized_docs = retrieved_docs
         
-        # Summarize conversation history to handle large contexts
+        # Summarize conversation history
         summarized_history = self.summarizer.summarize_conversation(sanitized_history)
         self.logger.debug("Conversation history summarized.")
         
-        # Perform trend analysis to capture key trends in conversation history
+        # Perform trend analysis
         trends = self.trend_analyzer.analyze_trends(sanitized_history)
         self.logger.debug("Trend analysis complete.")
         
-        # Combine summarized history, trends, and retrieved documents to form the context
+        # Combine summarized history, trends, and retrieved documents
         context = "\n".join(summarized_history) + "\n" + "\n".join(sanitized_docs) + "\n" + "\n".join(trends)
         
         # Check cache
@@ -114,7 +112,7 @@ class HyPE:
             self.logger.info("Cache hit for the given context.")
             return self.cache.get(cache_key)
         
-        # Define the prompt for generating Hypothetical Ground Truths
+        # Prepare the prompt for generating Hypothetical Ground Truths
         prompt = (
             f"You are an intelligent assistant analyzing the following summarized conversation and retrieved documents.\n\n"
             f"Conversation History:\n{context}\n\n"
@@ -150,7 +148,27 @@ class HyPE:
             else:
                 validated_ground_truths = ground_truths
             
-            # Update cache
+            # Calculate confidence scores
+            confidence_scores = [self._calculate_confidence(gt) for gt in validated_ground_truths]
+            
+            # Check existing data in the database and compare confidence
+            for gt, score in zip(validated_ground_truths, confidence_scores):
+                existing_profile = self.db.get_user_profile()
+                if existing_profile:
+                    existing_score = self._calculate_confidence(existing_profile)
+                    if score > existing_score:
+                        self.db.update_user_profile(gt)
+                        self.logger.debug(f"User profile updated with new ground truth (confidence: {score}).")
+                    else:
+                        self.logger.debug(f"Existing profile retained (higher confidence: {existing_score}).")
+                else:
+                    if score > self.config['confidence_threshold']:
+                        self.db.update_user_profile(gt)
+                        self.logger.debug(f"New user profile created with ground truth (confidence: {score}).")
+                    else:
+                        self.logger.debug(f"Inconclusive data check (confidence: {score}), no update made.")
+            
+            # Update cache with new ground truths
             if self.cache:
                 self.cache.set(cache_key, validated_ground_truths)
                 self.logger.info("Cache updated with new ground truths.")
@@ -166,7 +184,35 @@ class HyPE:
         except Exception as e:
             self.logger.error(f"Error during ground truth generation: {e}")
             return []
-    
+
+    def _calculate_confidence(self, ground_truth: str) -> float:
+        """
+        Calculate confidence score for the generated ground truth.
+        The score is based on how often similar conclusions were drawn in the past.
+        :param ground_truth: The ground truth text.
+        :return: Confidence score (0.0 to 1.0).
+        """
+        # Example: Count how many times a similar ground truth has been generated
+        past_ground_truths = self.db.get_past_ground_truths()  # Hypothetical DB method to retrieve past conclusions
+        similar_count = sum(1 for past_gt in past_ground_truths if self._is_similar(ground_truth, past_gt))
+        
+        # Confidence is the ratio of similar conclusions to the total past conclusions
+        total_count = len(past_ground_truths)
+        confidence_score = similar_count / total_count if total_count > 0 else 0.5  # Default to 0.5 for new profiles
+        
+        return confidence_score
+
+    def _is_similar(self, gt1: str, gt2: str) -> bool:
+        """
+        Check if two ground truths are similar.
+        This can be implemented using semantic similarity, e.g., cosine similarity between embeddings.
+        :param gt1: Ground truth 1.
+        :param gt2: Ground truth 2.
+        :return: Boolean indicating whether they are similar.
+        """
+        # For simplicity, using exact match. This can be replaced with a more advanced similarity check.
+        return gt1 == gt2
+
     def _generate_cache_key(self, context: str) -> str:
         """
         Generate a unique cache key based on the context.
