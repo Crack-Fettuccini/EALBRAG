@@ -1,15 +1,18 @@
-# Updated Sliding Window Manager to integrate HyPE
 import torch
-from hype import HyPE  # Import HyPE class
+from HyDE import HyDE
+from HyPE import HyPE
 
 class SlidingWindowManager:
-    def __init__(self, window_size, device, hype_config_path, max_tokens_part1=128, max_tokens_part2=128, max_tokens_part3=64, max_tokens_part4=200):
+    def __init__(self, window_size, device, model_hype, model_hyde, tokenizer_hype, tokenizer_hyde, max_tokens_part1=128, max_tokens_part2=128, max_tokens_part3=64, max_tokens_part4=200):
         """
-        Initialize the Sliding Window Manager with HyPE integration.
+        Initialize the Sliding Window Manager.
         :param window_size: Total number of tokens in the sliding window.
-        :param device: torch.device (cpu or cuda).
-        :param hype_config_path: Path to the HyPE configuration file.
-        :param max_tokens_part1: Maximum tokens for RAG and HyDE Data (includes HyPE data).
+        :param device: torch.device (cpu or cuda)
+        :param model_hype: Pretrained model for HyPE.
+        :param model_hyde: Pretrained model for HyDE.
+        :param tokenizer_hype: Tokenizer corresponding to the HyPE model.
+        :param tokenizer_hyde: Tokenizer corresponding to the HyDE model.
+        :param max_tokens_part1: Maximum tokens for RAG and HyDE Data.
         :param max_tokens_part2: Maximum tokens for Prompted Data.
         :param max_tokens_part3: Maximum tokens for Primary and Secondary Queries.
         :param max_tokens_part4: Maximum tokens for Response.
@@ -20,21 +23,21 @@ class SlidingWindowManager:
         self.max_tokens_part2 = max_tokens_part2
         self.max_tokens_part3 = max_tokens_part3
         self.max_tokens_part4 = max_tokens_part4
-
-        # Initialize HyPE module
-        self.hype = HyPE(config_path=hype_config_path)
-
+        
+        self.hyde = HyDE(model_hyde, tokenizer_hyde, device)
+        self.hype = HyPE(model_hype, tokenizer_hype, device)
+        
         self.reset_window()
 
     def reset_window(self):
         """Reset the sliding window to its initial state."""
         self.parts = {
-            'part1': [],  # HyDE data, including RAG and HyPE
+            'part1': [],  # RAG and HyDE Data
             'part2': [],  # Prompted Data
             'part3': [],  # Primary and Secondary Queries
             'part4': [],  # Response
         }
-    
+
     def tokenize_text(self, text, tokenizer, max_tokens):
         """
         Tokenizes and truncates the input text.
@@ -63,40 +66,40 @@ class SlidingWindowManager:
         tokens = self.tokenize_text(combined_queries, tokenizer, self.max_tokens_part3)
         return tokens
 
-    def fill_parts(self, tokens_part1, tokens_part3):
+    def fill_parts_with_hyde_and_hype(self, query, conversation_history, retrieved_docs):
         """
-        Fill the sliding window parts with tokens, integrating HyPE data into part1.
-        :param tokens_part1: RAG and HyDE data tokens.
+        Fill part1 using HyDE and HyPE generated data.
+        :param query: Query string to generate HyDE hypothetical documents.
+        :param conversation_history: List of conversation strings for HyPE.
+        :param retrieved_docs: List of retrieved documents for HyPE ground truth generation.
+        """
+        # Generate hypothetical documents using HyDE
+        hyde_results = self.hyde.generate_and_return_token_ids(query)
+        hyde_tokens = hyde_results[0][1]  # Extract token ids from the first result
+        hyde_tokens = hyde_tokens[:self.max_tokens_part1]
+
+        # Generate hypothetical ground truths using HyPE
+        hype_ground_truths = self.hype.generate_hypothetical_ground_truths(conversation_history, retrieved_docs)
+        if hype_ground_truths:
+            hype_tokens = self.tokenize_text(hype_ground_truths[0], self.hype.tokenizer, self.max_tokens_part1)
+            # Combine HyDE and HyPE tokens for part1
+            combined_tokens_part1 = hyde_tokens[:self.max_tokens_part1 // 2] + hype_tokens[:self.max_tokens_part1 // 2]
+        else:
+            combined_tokens_part1 = hyde_tokens
+        
+        # Fill the part1 with the combined tokens
+        self.parts['part1'] = combined_tokens_part1
+    
+    def fill_parts(self, tokens_part3):
+        """
+        Fill the sliding window parts with tokens.
         :param tokens_part3: Primary and secondary query tokens.
         """
-        # Fill part1 (HyDE data)
-        self.parts['part1'] = tokens_part1[:self.max_tokens_part1]
-        
-        # Fill part3 (queries)
         self.parts['part3'] = tokens_part3[:self.max_tokens_part3]
-        
-        # Initialize empty parts
+
+        # Ensure part2 and part4 are initialized
         self.parts['part2'] = []  # Example context or prompted data
         self.parts['part4'] = []  # Response window starts empty
-
-    def integrate_hype_data(self, conversation_history, retrieved_docs, tokenizer):
-        """
-        Integrate Hypothetical Ground Truths generated by HyPE into the sliding window.
-        :param conversation_history: List of conversation strings.
-        :param retrieved_docs: List of documents or external knowledge to integrate.
-        :param tokenizer: Tokenizer for encoding the text.
-        """
-        # Generate Hypothetical Ground Truths from HyPE
-        hype_data = self.hype.generate_hypothetical_ground_truths(conversation_history, retrieved_docs)
-        
-        # Tokenize the generated ground truths
-        hype_tokens = []
-        for text in hype_data:
-            hype_tokens.extend(self.tokenize_text(text, tokenizer, self.max_tokens_part1))
-        
-        # Fill part1 (RAG and HyPE data)
-        self.fill_parts(hype_tokens, [])
-        print(f"Integrated {len(hype_tokens)} tokens from HyPE data into part1.")
 
     def get_combined_query(self):
         """
