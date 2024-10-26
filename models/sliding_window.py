@@ -1,6 +1,7 @@
 import torch
 from HyDE import HyDE
 from HyPE import HyPE
+from query_identifier import QueryIdentifier
 
 class SlidingWindowManager:
     def __init__(self, window_size, device, model_hype, model_hyde, tokenizer_hype, tokenizer_hyde, max_tokens_part1=128, max_tokens_part2=128, max_tokens_part3=64, max_tokens_part4=200):
@@ -26,6 +27,7 @@ class SlidingWindowManager:
         
         self.hyde = HyDE(model_hyde, tokenizer_hyde, device)
         self.hype = HyPE(model_hype, tokenizer_hype, device)
+        self.query_identifier = QueryIdentifier()
         
         self.reset_window()
 
@@ -56,14 +58,21 @@ class SlidingWindowManager:
         :param tokenizer: The tokenizer used for encoding.
         :return: List of tokens for the queries.
         """
-        sentences = prompt.split('.')
-        queries = [s.strip() for s in sentences if '?' in s]
-        primary_query = queries[0] if queries else ""
-        secondary_queries = queries[1:] if len(queries) > 1 else []
+        self.query_identifier.process_corpus(prompt)  # Process the prompt to identify queries
+
+        sentences = self.query_identifier.split_into_sentences(prompt)
+        possible_queries = self.query_identifier.detect_possible_queries(sentences)
+        
+        if not possible_queries:
+            return []  # Return empty if no queries found
+
+        main_content, queries = self.query_identifier.identify_content_and_queries(sentences, possible_queries)
+        primary_queries, secondary_queries = self.query_identifier.categorize_queries(main_content, queries)
 
         # Combine primary and secondary queries
-        combined_queries = primary_query + " " + " ".join(secondary_queries)
-        tokens = self.tokenize_text(combined_queries, tokenizer, self.max_tokens_part3)
+        combined_queries = primary_queries + secondary_queries
+        combined_query_text = " ".join(combined_queries)
+        tokens = self.tokenize_text(combined_query_text, tokenizer, self.max_tokens_part3)
         return tokens
 
     def fill_parts_with_hyde_and_hype(self, query, conversation_history, retrieved_docs):
