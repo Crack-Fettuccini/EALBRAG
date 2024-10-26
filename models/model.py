@@ -16,14 +16,39 @@ attention_threshold = 0.1  # Threshold for important tokens
 # Initialize LSTM-based memory (a deque to store top important tokens)
 memory = deque(maxlen=memory_size)
 
-# Function to track token importance based on attention scores
-def track_attention(attentions, input_ids, threshold=attention_threshold):
-    token_importance = []
-    for layer_attn in attentions:
-        avg_attn = layer_attn.mean(dim=1)  # Mean over all heads
-        important_tokens = (avg_attn > threshold).nonzero(as_tuple=True)[1]
-        token_importance.extend(input_ids[important_tokens].tolist())
-    return token_importance
+# Function to track token importance based on attention scores across all heads
+def track_attention_per_head(attentions, input_ids, threshold=attention_threshold):
+    token_attention_info = {}
+    
+    # Iterate over each layer and head, collecting attention scores for each token
+    for layer_idx, layer_attn in enumerate(attentions):
+        # layer_attn shape: (batch_size, num_heads, seq_len, seq_len)
+        avg_attn_per_token = layer_attn.mean(dim=1)  # Average over heads
+        important_tokens = (avg_attn_per_token > threshold).nonzero(as_tuple=True)[1]
+
+        # Initialize dictionary for layer's tokens
+        token_attention_info[layer_idx] = {}
+
+        for head_idx in range(layer_attn.shape[1]):
+            # Attention for current head
+            head_attn = layer_attn[:, head_idx, :, :]
+            for token_idx in range(head_attn.shape[-1]):
+                token_id = input_ids[0, token_idx].item()
+                token = tokenizer.decode([token_id])
+
+                # Store attention scores across heads
+                if token_id not in token_attention_info[layer_idx]:
+                    token_attention_info[layer_idx][token_id] = {
+                        "token": token,
+                        "attention_scores": []
+                    }
+
+                # Append current head's attention score for the token
+                token_attention_info[layer_idx][token_id]["attention_scores"].append(
+                    head_attn[0, token_idx].tolist()  # Per-head score for token
+                )
+
+    return token_attention_info
 
 # Initialize context and generate tokens one at a time
 def generate_response(prompt, max_length=100, verbose=False):
@@ -39,9 +64,10 @@ def generate_response(prompt, max_length=100, verbose=False):
         logits = outputs.logits
         attentions = outputs.attentions  # Shape: (num_layers, batch, num_heads, seq_len, seq_len)
 
-        # Token importance tracking
-        important_tokens = track_attention(attentions, generated)
-        memory.extend(important_tokens)  # Update memory with important tokens
+        # Track detailed per-head attention for each token
+        token_attention_info = track_attention_per_head(attentions, generated)
+        memory.extend([tok for layer_info in token_attention_info.values() 
+                       for tok in layer_info.keys()])  # Update memory with important tokens
 
         # Sample the next token
         next_token_logits = logits[:, -1, :]
@@ -66,12 +92,15 @@ def generate_response(prompt, max_length=100, verbose=False):
 
     # Decode final generated response
     response = tokenizer.decode(generated[0], skip_special_tokens=True)
-    return response
+    return response, token_attention_info
 
 # Usage example
 prompt = "Explain the theory of relativity in simple terms."
-response = generate_response(prompt, max_length=50, verbose=True)
+response, attention_data = generate_response(prompt, max_length=50, verbose=True)
 print("\nFinal Response:", response)
 
-# Print top tokens in memory
-print("\nImportant Tokens in Memory:", [tokenizer.decode(tok) for tok in list(memory)])
+# Print attention information for a specific token in the first layer as an example
+layer_idx = 0  # First layer
+token_id_example = list(attention_data[layer_idx].keys())[0]  # Example token id from layer
+print(f"\nAttention details for token '{attention_data[layer_idx][token_id_example]['token']}' in Layer {layer_idx}:\n",
+      attention_data[layer_idx][token_id_example]["attention_scores"])
