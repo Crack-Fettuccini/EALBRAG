@@ -75,5 +75,5 @@ def main(file_path):
     print("Secondary Queries:", secondary_queries)
 
 # Run the main function with an example corpus file
-if __name__ == "__main__":
-    main("path/to/your/corpus.txt")
+#if __name__ == "__main__":
+#    main("path/to/your/corpus.txt")
