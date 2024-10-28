@@ -1,53 +1,56 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-class AttentionAnalyzer:
+class PassageCoverageAnalyzer:
     def __init__(self, model_name="meta-llama/Llama-3.2-1B"):
         # Load the model and tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(model_name, output_attentions=True)
 
-    def get_most_attended_tokens(self, input_text, top_k=3):
+    def analyze_coverage(self, input_text, threshold=0.1):
         """
-        Analyzes attention scores for each token's generation step.
-        
+        Analyzes cumulative attention weights to determine if all tokens in the passage
+        were attended to sufficiently.
+
         Parameters:
             input_text (str): The input text to analyze.
-            top_k (int): The number of top-attended tokens to retrieve at each generation step.
-        
+            threshold (float): The minimum cumulative attention score for a token to be considered "attended."
+
         Returns:
-            dict: A dictionary where each key is a token position, and values are lists of top attended tokens.
+            dict: A dictionary with cumulative attention scores and a flag indicating sufficient coverage.
         """
         # Tokenize the input and prepare for model
         inputs = self.tokenizer(input_text, return_tensors="pt")
-        attention_scores_per_token = {}
+        cumulative_attention_scores = torch.zeros(inputs["input_ids"].shape[-1])
 
         # Run the model and get attention weights
         with torch.no_grad():
             outputs = self.model(**inputs)
         
-        # Loop through each layer's attention outputs
-        for layer_idx, layer_attention in enumerate(outputs.attentions):
-            # `layer_attention` has shape (batch_size, num_heads, seq_len, seq_len)
-            # We focus on the last hidden layer's attentions, reducing attention scores across heads.
-            avg_attention = layer_attention.mean(dim=1)  # Shape: (seq_len, seq_len)
-            
-            for token_idx in range(avg_attention.shape[1]):
-                # Get attention scores for the current token
-                token_attention_scores = avg_attention[0, token_idx]
-                
-                # Identify the top `k` most attended tokens
-                top_indices = torch.topk(token_attention_scores, top_k).indices
-                top_tokens = [self.tokenizer.decode(inputs["input_ids"][0][idx].item()) for idx in top_indices]
-                
-                # Store results
-                attention_scores_per_token[token_idx] = top_tokens
-
-        return attention_scores_per_token
+        # Aggregate attention across all layers and heads
+        for layer_attention in outputs.attentions:
+            # Average over heads and sum across layers
+            layer_cumulative_attention = layer_attention.mean(dim=1).sum(dim=0).squeeze()
+            cumulative_attention_scores += layer_cumulative_attention
+        
+        # Normalize attention scores
+        cumulative_attention_scores /= cumulative_attention_scores.sum()
+        
+        # Determine if each token meets the threshold
+        coverage = cumulative_attention_scores >= threshold
+        sufficient_coverage = coverage.all().item()  # True if all tokens have sufficient attention
+        
+        # Prepare results
+        coverage_details = {
+            "cumulative_attention_scores": cumulative_attention_scores.tolist(),
+            "sufficient_coverage": sufficient_coverage
+        }
+        
+        return coverage_details
 
 # Example usage
-analyzer = AttentionAnalyzer(model_name="meta-llama/Llama-3.2-1B")
+analyzer = PassageCoverageAnalyzer(model_name="meta-llama/Llama-3.2-1B")
 input_text = "The llama wandered through the mountains."
-most_attended_tokens = analyzer.get_most_attended_tokens(input_text)
-for idx, tokens in most_attended_tokens.items():
-    print(f"Token {idx}: Most attended tokens: {tokens}")
+coverage_results = analyzer.analyze_coverage(input_text)
+print("Cumulative Attention Scores:", coverage_results["cumulative_attention_scores"])
+print("Sufficient Coverage:", coverage_results["sufficient_coverage"])
