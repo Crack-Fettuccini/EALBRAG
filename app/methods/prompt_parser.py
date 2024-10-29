@@ -1,7 +1,7 @@
 # prompt_manager.py
 from sliding_window import SlidingWindowManager
 
-class PromptManager:
+class PromptParser:
     def __init__(self, model_name="meta-llama/Llama-3.2-1B", window_size=50):
         self.sliding_window_manager = SlidingWindowManager(model_name=model_name, window_size=window_size)
 
