@@ -3,7 +3,7 @@ from flask import Flask, render_template, request, jsonify
 app = Flask(__name__)
 
 def process_text(input_text):
-    #placeholder
+    #return prompt_parser
     return input_text[::-1]
 
 @app.route('/')
