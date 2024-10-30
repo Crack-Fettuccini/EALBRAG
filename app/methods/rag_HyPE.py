@@ -1,8 +1,8 @@
 import torch
 from transformers import AutoTokenizer, LlamaForCausalLM
-from HyPE import HyPE  # Assumed to be saved as hype.py
-from rag_query_optimizer import RAGQueryOptimizer  # Assumed to be saved as rag_query_optimizer.py
-import faiss  # For sparse indexing and retrieval of embeddings
+from HyPE import HyPE
+from rag_query_optimizer import RAGQueryOptimizer
+import faiss
 
 # Initialize device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
