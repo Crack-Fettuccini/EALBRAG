@@ -112,6 +112,7 @@ def perform_rag_with_hype(query, conversation_history):
     }
 
 # Example usage
+"""
 conversation_history = [
     "I'm interested in renewable energy technologies.",
     "Do you have more information on sustainable agriculture?",
@@ -126,3 +127,4 @@ rag_result = perform_rag_with_hype(query, conversation_history)
 print(f"Reconstructed Query: {rag_result['reconstructed_query']}")
 print(f"RAG Scores: {rag_result['rag_scores']}")
 print(f"Retrieved Document Indices: {rag_result['retrieved_indices']}")
+"""
