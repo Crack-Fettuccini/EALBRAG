@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoTokenizer, LlamaForCausalLM
-from HyDE import HyDE  # Assumed to be saved as hyde.py
-from rag_query_optimizer import RAGQueryOptimizer  # Assumed to be saved as rag_query_optimizer.py
+from HyDE import HyDE
+from rag_query_optimizer import RAGQueryOptimizer
 
 # Initialize device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
