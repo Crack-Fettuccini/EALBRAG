@@ -70,7 +70,7 @@ def perform_rag_with_hyde(query):
         })
 
     return rag_outputs
-
+"""
 # Example usage
 query = "Explain the impact of quantum computing on cryptography."
 rag_results = perform_rag_with_hyde(query)
@@ -81,3 +81,4 @@ for idx, result in enumerate(rag_results):
     print(f"RAG Scores: {result['rag_scores']}")
     print(f"Retrieved Document Indices: {result['retrieved_indices']}")
     print("\n" + "="*50 + "\n")
+"""
