@@ -18,6 +18,12 @@ model_name = "meta-llama/Llama-3.2-1B"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = LlamaForCausalLM.from_pretrained(model_name).to(device)
 
+# Caches
+embedding_cache = {}  # Caches for embeddings
+rag_cache = {}  # Caches for RAG results
+hyde_cache = {}  # Caches for HyDE hypothetical documents
+hype_cache = {}  # Caches for HyPE hypothetical profiles
+
 # Instantiate HyDE
 hyde = HyDE(
     model=model,
@@ -66,55 +72,46 @@ rag_query_optimizer = RAGQueryOptimizer(
 index = faiss.IndexFlatIP(embedding_dim)
 embedding_storage = []  # To store embeddings for retrieval reference
 
-class SlidingWindowManager:
-    def __init__(self, window_size=512, max_tokens_part1=128, max_tokens_part2=128, max_tokens_part3=64, max_tokens_part4=200):
-        self.window_size = window_size
-        self.max_tokens_part1 = max_tokens_part1
-        self.max_tokens_part2 = max_tokens_part2
-        self.max_tokens_part3 = max_tokens_part3
-        self.max_tokens_part4 = max_tokens_part4
-        self.reset_window()
+# Define hypothetical embedding indexing and retrieval functions with caching
+def get_cached_embedding(text, generate_embedding):
+    """Returns embedding for a text, using cache if available."""
+    if text in embedding_cache:
+        return embedding_cache[text]
+    embedding = generate_embedding(text)
+    embedding_cache[text] = embedding
+    return embedding
 
-    def reset_window(self):
-        """Reset the sliding window parts."""
-        self.parts = {'part1': [], 'part2': [], 'part3': [], 'part4': []}
-
-    def fill_parts(self, tokens_part3):
-        """Fill sliding window with tokens."""
-        self.parts['part3'] = tokens_part3[:self.max_tokens_part3]
-        self.parts['part2'] = []  # Reset other parts
-        self.parts['part4'] = []
-
-    def get_combined_query(self):
-        """Combine all parts into one list."""
-        combined = []
-        for part in self.parts.values():
-            combined.extend(part)
-        return combined[:self.window_size]
-
-# Define hypothetical embedding indexing and retrieval functions
 def index_hypothetical_embeddings(conversation_history):
     try:
-        hypothetical_profiles = hype.generate_hypothetical_ground_truths(conversation_history, retrieved_docs=[])
+        conversation_key = tuple(conversation_history)
+        if conversation_key in hype_cache:
+            hypothetical_profiles = hype_cache[conversation_key]
+        else:
+            hypothetical_profiles = hype.generate_hypothetical_ground_truths(conversation_history, retrieved_docs=[])
+            hype_cache[conversation_key] = hypothetical_profiles
+
         for profile in hypothetical_profiles:
-            embedding = hype._get_embedding(profile)
+            embedding = get_cached_embedding(profile, hype._get_embedding)
             index.add(embedding)
             embedding_storage.append((profile, embedding))
-        logger.info("Indexed hypothetical embeddings.")
+        logger.info("Indexed hypothetical embeddings with caching.")
     except Exception as e:
         logger.error("Error indexing embeddings: %s", str(e))
 
 def retrieve_relevant_profiles(query):
     try:
-        query_embedding = hype._get_embedding(query)
+        query_embedding = get_cached_embedding(query, hype._get_embedding)
         _, retrieved_indices = index.search(query_embedding, k=5)
         return [embedding_storage[idx][0] for idx in retrieved_indices[0]]
     except Exception as e:
         logger.error("Error retrieving profiles: %s", str(e))
         return []
 
-# RAG with HyDE
+# RAG with HyDE using cache
 def perform_rag_with_hyde(query):
+    if query in hyde_cache:
+        return hyde_cache[query]
+    
     try:
         hypothetical_documents = hyde.generate_hypothetical_documents(query)
         tokenized_docs = [tokenizer.encode(doc, return_tensors="pt").to(device) for doc in hypothetical_documents]
@@ -122,20 +119,37 @@ def perform_rag_with_hyde(query):
         rag_outputs = []
         for doc_tokens in tokenized_docs:
             prompt_tokens = torch.tensor([]).to(device)
-            reconstructed_query, rag_scores, retrieved_indices = rag_query_optimizer(
-                query_tokens=doc_tokens, prompt_tokens=prompt_tokens, tokenizer=tokenizer
-            )
+            cache_key = (query, tuple(doc_tokens.tolist()))
+            if cache_key in rag_cache:
+                reconstructed_query, rag_scores, retrieved_indices = rag_cache[cache_key]
+            else:
+                reconstructed_query, rag_scores, retrieved_indices = rag_query_optimizer(
+                    query_tokens=doc_tokens, prompt_tokens=prompt_tokens, tokenizer=tokenizer
+                )
+                rag_cache[cache_key] = (reconstructed_query, rag_scores, retrieved_indices)
+            
             reconstructed_text = tokenizer.decode(reconstructed_query[0], skip_special_tokens=True)
-            rag_outputs.append({"reconstructed_query": reconstructed_text, "rag_scores": rag_scores, "retrieved_indices": retrieved_indices})
+            rag_outputs.append({
+                "reconstructed_query": reconstructed_text,
+                "rag_scores": rag_scores,
+                "retrieved_indices": retrieved_indices
+            })
         
-        logger.info("RAG with HyDE completed.")
+        hyde_cache[query] = rag_outputs
+        logger.info("RAG with HyDE completed and cached.")
         return rag_outputs
     except Exception as e:
         logger.error("Error performing RAG with HyDE: %s", str(e))
         return []
 
-# RAG with HyPE and FAISS-enhanced retrieval
+# RAG with HyPE and FAISS-enhanced retrieval with caching
 def perform_rag_with_hype(query, conversation_history):
+    history_key = tuple(conversation_history)
+    cache_key = (query, history_key)
+    
+    if cache_key in hype_cache:
+        return hype_cache[cache_key]
+
     try:
         index_hypothetical_embeddings(conversation_history)
         relevant_profiles = retrieve_relevant_profiles(query)
@@ -149,12 +163,19 @@ def perform_rag_with_hype(query, conversation_history):
         )
         
         reconstructed_text = tokenizer.decode(reconstructed_query[0], skip_special_tokens=True)
-        logger.info("RAG with HyPE completed.")
-        return {"reconstructed_query": reconstructed_text, "rag_scores": rag_scores, "retrieved_indices": retrieved_indices}
+        result = {
+            "reconstructed_query": reconstructed_text,
+            "rag_scores": rag_scores,
+            "retrieved_indices": retrieved_indices
+        }
+        
+        hype_cache[cache_key] = result
+        logger.info("RAG with HyPE completed and cached.")
+        return result
     except Exception as e:
         logger.error("Error performing RAG with HyPE: %s", str(e))
         return {}
-
+"""
 # Example Usage
 if __name__ == "__main__":
     # Sample query and conversation
@@ -168,3 +189,4 @@ if __name__ == "__main__":
     # Perform RAG with HyPE
     hype_results = perform_rag_with_hype(sample_query, conversation_history)
     logger.info("HyPE Results: %s", hype_results)
+"""
