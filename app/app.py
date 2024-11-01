@@ -1,10 +1,11 @@
 from flask import Flask, render_template, request, jsonify
+from app.methods.generate_with_memory import generate_response
 
 app = Flask(__name__)
 
 def process_text(input_text):
-    #return prompt_parser
-    return input_text[::-1]
+    response, _ = generate_response(input_text, max_length=50, verbose=False)
+    return response
 
 @app.route('/')
 def index():
@@ -14,8 +15,6 @@ def index():
 def process():
     data = request.get_json()
     user_input = data['message']
-
-    # Process the user input
     bot_response = process_text(user_input)
 
     # Return the processed response as JSON

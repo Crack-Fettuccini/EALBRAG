@@ -1,4 +1,3 @@
-# generate_with_memory.py
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from models.memory_attention import MemoryAttention  # Ensure this path is correct
