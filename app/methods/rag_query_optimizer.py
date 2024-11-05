@@ -87,59 +87,57 @@ def retrieve_relevant_profiles(query):
         logger.error("Error retrieving profiles: %s", str(e))
         return []
 
-# RAG with HyDE
-def perform_rag_with_hyde(query):
+# RAG with HyDE using Sliding Window mechanism
+def perform_rag_with_hyde_sliding_window(query):
     try:
         hypothetical_documents = hyde.generate_hypothetical_documents(query)
         tokenized_docs = [tokenizer.encode(doc, return_tensors="pt").to(device) for doc in hypothetical_documents]
         
         rag_outputs = []
+        end_token_id = tokenizer.eos_token_id
+
         for doc_tokens in tokenized_docs:
             prompt_tokens = torch.tensor([]).to(device)
-            reconstructed_query, rag_scores, retrieved_indices = rag_query_optimizer(
-                query_tokens=doc_tokens, prompt_tokens=prompt_tokens, tokenizer=tokenizer
-            )
-            reconstructed_text = tokenizer.decode(reconstructed_query[0], skip_special_tokens=True)
-            rag_outputs.append({"reconstructed_query": reconstructed_text, "rag_scores": rag_scores, "retrieved_indices": retrieved_indices})
+            window_start, window_end = 0, 512
+            context_tokens = doc_tokens[:, window_start:window_end]
+            complete_output = []
+
+            while True:
+                # Update prompt tokens with the current context window
+                reconstructed_query, rag_scores, retrieved_indices = rag_query_optimizer(
+                    query_tokens=context_tokens, prompt_tokens=prompt_tokens, tokenizer=tokenizer
+                )
+                
+                complete_output += reconstructed_query[0].tolist()
+                
+                # Check for end token
+                if end_token_id in reconstructed_query[0] or window_end >= len(doc_tokens[0]):
+                    break
+
+                # Slide the window forward
+                window_start = window_end
+                window_end += 512
+                context_tokens = doc_tokens[:, window_start:window_end]
+
+            reconstructed_text = tokenizer.decode(complete_output, skip_special_tokens=True)
+            rag_outputs.append({
+                "reconstructed_query": reconstructed_text,
+                "rag_scores": rag_scores,
+                "retrieved_indices": retrieved_indices
+            })
         
-        logger.info("RAG with HyDE completed.")
+        logger.info("RAG with HyDE Sliding Window completed.")
         return rag_outputs
     except Exception as e:
-        logger.error("Error performing RAG with HyDE: %s", str(e))
+        logger.error("Error performing RAG with HyDE Sliding Window: %s", str(e))
         return []
 
-# RAG with HyPE and FAISS-enhanced retrieval
-def perform_rag_with_hype(query, conversation_history):
-    try:
-        index_hypothetical_embeddings(conversation_history)
-        relevant_profiles = retrieve_relevant_profiles(query)
-        
-        context = " ".join(relevant_profiles) + " " + query
-        tokenized_context = tokenizer.encode(context, return_tensors="pt").to(device)
-        
-        prompt_tokens = torch.tensor([]).to(device)
-        reconstructed_query, rag_scores, retrieved_indices = rag_query_optimizer(
-            query_tokens=tokenized_context, prompt_tokens=prompt_tokens, tokenizer=tokenizer
-        )
-        
-        reconstructed_text = tokenizer.decode(reconstructed_query[0], skip_special_tokens=True)
-        logger.info("RAG with HyPE completed.")
-        return {"reconstructed_query": reconstructed_text, "rag_scores": rag_scores, "retrieved_indices": retrieved_indices}
-    except Exception as e:
-        logger.error("Error performing RAG with HyPE: %s", str(e))
-        return {}
-"""
-# Example Usage
+# Example Usage with Sliding Window
 if __name__ == "__main__":
     # Sample query and conversation
     sample_query = "What are the implications of AI on future technology?"
     conversation_history = ["AI is rapidly evolving in different fields.", "Technology is changing due to AI advances."]
     
-    # Perform RAG with HyDE
-    hyde_results = perform_rag_with_hyde(sample_query)
-    logger.info("HyDE Results: %s", hyde_results)
-    
-    # Perform RAG with HyPE
-    hype_results = perform_rag_with_hype(sample_query, conversation_history)
-    logger.info("HyPE Results: %s", hype_results)
-"""
+    # Perform RAG with HyDE using Sliding Window
+    hyde_results = perform_rag_with_hyde_sliding_window(sample_query)
+    logger.info("HyDE Results (Sliding Window): %s", hyde_results)
