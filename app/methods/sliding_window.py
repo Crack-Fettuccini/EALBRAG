@@ -23,6 +23,7 @@ embedding_cache = {}  # Caches for embeddings
 rag_cache = {}  # Caches for RAG results
 hyde_cache = {}  # Caches for HyDE hypothetical documents
 hype_cache = {}  # Caches for HyPE hypothetical profiles
+last_output_cache = None  # Cache for the last saved output
 
 # Instantiate HyDE
 hyde = HyDE(
@@ -107,10 +108,18 @@ def retrieve_relevant_profiles(query):
         logger.error("Error retrieving profiles: %s", str(e))
         return []
 
-# RAG with HyDE using cache
+# RAG with HyDE using cache and last output caching
 def perform_rag_with_hyde(query):
+    global last_output_cache
+
+    # Check if last output matches current query
+    if last_output_cache and last_output_cache.get("query") == query:
+        return last_output_cache["output"]
+    
     if query in hyde_cache:
-        return hyde_cache[query]
+        result = hyde_cache[query]
+        last_output_cache = {"query": query, "output": result}
+        return result
     
     try:
         hypothetical_documents = hyde.generate_hypothetical_documents(query)
@@ -135,20 +144,30 @@ def perform_rag_with_hyde(query):
                 "retrieved_indices": retrieved_indices
             })
         
+        # Cache the result in both `hyde_cache` and `last_output_cache`
         hyde_cache[query] = rag_outputs
+        last_output_cache = {"query": query, "output": rag_outputs}
         logger.info("RAG with HyDE completed and cached.")
         return rag_outputs
     except Exception as e:
         logger.error("Error performing RAG with HyDE: %s", str(e))
         return []
 
-# RAG with HyPE and FAISS-enhanced retrieval with caching
+# RAG with HyPE and FAISS-enhanced retrieval with caching and last output caching
 def perform_rag_with_hype(query, conversation_history):
+    global last_output_cache
+
     history_key = tuple(conversation_history)
     cache_key = (query, history_key)
     
+    # Check if last output matches current query and conversation history
+    if last_output_cache and last_output_cache.get("query") == query and last_output_cache.get("history") == history_key:
+        return last_output_cache["output"]
+
     if cache_key in hype_cache:
-        return hype_cache[cache_key]
+        result = hype_cache[cache_key]
+        last_output_cache = {"query": query, "history": history_key, "output": result}
+        return result
 
     try:
         index_hypothetical_embeddings(conversation_history)
@@ -169,7 +188,9 @@ def perform_rag_with_hype(query, conversation_history):
             "retrieved_indices": retrieved_indices
         }
         
+        # Cache the result in both `hype_cache` and `last_output_cache`
         hype_cache[cache_key] = result
+        last_output_cache = {"query": query, "history": history_key, "output": result}
         logger.info("RAG with HyPE completed and cached.")
         return result
     except Exception as e:
