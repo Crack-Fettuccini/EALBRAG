@@ -1,18 +1,22 @@
 import torch
-from transformers import AutoTokenizer, LlamaForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from HyPE import HyPE
 from rag_query_optimizer import RAGQueryOptimizer
 import faiss
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 # Initialize device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Initialize HyPE model with pre-trained model and tokenizer
+# Load Model and Tokenizer
 model_name = "meta-llama/Llama-3.2-1B"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = LlamaForCausalLM.from_pretrained(model_name).to(device)
+model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
 
-# Instantiate HyPE with the model, tokenizer, and generation parameters
+# Initialize HyPE with generation parameters
 hype = HyPE(
     model=model,
     tokenizer=tokenizer,
@@ -25,12 +29,11 @@ hype = HyPE(
     repetition_penalty=1.0
 )
 
-# Define the RAG Query Optimizer parameters
+# Initialize RAG Query Optimizer
 vocab_size = tokenizer.vocab_size
-embedding_dim = 768  # Assumed dimension for the specific model
-knowledge_base_embeddings = torch.randn(1000, embedding_dim).to(device)  # Placeholder for knowledge base embeddings
+embedding_dim = model.config.hidden_size
+knowledge_base_embeddings = torch.randn(1000, embedding_dim).to(device)  # Placeholder for embeddings
 
-# Instantiate RAGQueryOptimizer
 rag_query_optimizer = RAGQueryOptimizer(
     vocab_size=vocab_size,
     embedding_dim=embedding_dim,
@@ -43,88 +46,79 @@ rag_query_optimizer = RAGQueryOptimizer(
     memory_size=1000
 )
 
-# Initialize FAISS for sparse indexing
+# Initialize FAISS index
 index = faiss.IndexFlatIP(embedding_dim)  # Inner Product for cosine similarity
+embedding_storage = []  # To track stored embeddings
 
-# Store generated hypothetical embeddings in FAISS index
-embedding_storage = []  # Keeps track of embeddings for retrieval reference
+# Functions for embedding generation, indexing, and retrieval
+def get_sparse_embedding(text):
+    """Generate embedding from text for retrieval."""
+    inputs = tokenizer(text, return_tensors="pt").to(device)
+    with torch.no_grad():
+        embeddings = model(**inputs, output_hidden_states=True).last_hidden_state.mean(dim=1)
+    return embeddings
 
 def index_hypothetical_embeddings(conversation_history):
     """
-    Generate hypothetical embeddings from HyPE and store them in FAISS index for sparse retrieval.
-    :param conversation_history: List of conversation strings.
+    Generate and store hypothetical embeddings from conversation history using HyPE.
     """
-    # Generate hypothetical profiles with HyPE
+    logging.info("Indexing hypothetical profiles...")
     hypothetical_profiles = hype.generate_hypothetical_ground_truths(conversation_history, retrieved_docs=[])
-
-    # Create sparse embeddings for each hypothetical profile
     for profile in hypothetical_profiles:
-        embedding = hype._get_embedding(profile)  # Generate the embedding for indexing
-        index.add(embedding)  # Add embedding to FAISS index
-        embedding_storage.append((profile, embedding))  # Store profile text and embedding for reference
+        embedding = hype._get_embedding(profile)
+        index.add(embedding)  # Store in FAISS index
+        embedding_storage.append((profile, embedding))  # Track profile and embedding
 
-def retrieve_relevant_profiles(query):
+def retrieve_relevant_profiles(query, k=5):
     """
-    Retrieve relevant profiles based on query using FAISS index.
-    :param query: Input query string.
-    :return: List of retrieved profiles.
+    Retrieve relevant profiles from FAISS index based on the query.
     """
-    # Get embedding for query
-    query_embedding = hype._get_embedding(query)
-
-    # Perform similarity search in FAISS index
-    _, retrieved_indices = index.search(query_embedding, k=5)  # Retrieve top-5 relevant profiles
-
-    # Gather and return retrieved profiles
+    query_embedding = get_sparse_embedding(query)
+    _, retrieved_indices = index.search(query_embedding, k=k)
     retrieved_profiles = [embedding_storage[idx][0] for idx in retrieved_indices[0]]
     return retrieved_profiles
 
-# Function to perform RAG with HyPE-enhanced responses
 def perform_rag_with_hype(query, conversation_history):
     """
-    Perform RAG-enhanced response generation by retrieving hypothetical profiles from FAISS and using them as context.
-    :param query: User input query.
-    :param conversation_history: List of past conversation strings.
-    :return: List of RAG-optimized results.
+    Perform RAG-based response generation by retrieving and using hypothetical profiles as context.
     """
-    # Step 1: Index the current conversation history into hypothetical profiles
+    # Index hypothetical profiles from conversation history if new
     index_hypothetical_embeddings(conversation_history)
 
-    # Step 2: Retrieve relevant hypothetical profiles based on the current query
+    # Retrieve relevant hypothetical profiles for context
     relevant_profiles = retrieve_relevant_profiles(query)
+    context = " ".join(relevant_profiles) + " " + query  # Create context with query and profiles
 
-    # Step 3: Tokenize the query and relevant profiles to use as context in RAG pipeline
-    context = " ".join(relevant_profiles) + " " + query
+    # Tokenize the context for RAG pipeline
     tokenized_context = tokenizer.encode(context, return_tensors="pt").to(device)
+    prompt_tokens = torch.tensor([]).to(device)  # Placeholder for optional prompt tokens
 
-    # Step 4: Pass the tokenized context through RAGQueryOptimizer
-    prompt_tokens = torch.tensor([]).to(device)  # Empty tensor for additional prompt if needed
+    # Perform RAG optimization
     reconstructed_query, rag_scores, retrieved_indices = rag_query_optimizer(
         query_tokens=tokenized_context, prompt_tokens=prompt_tokens, tokenizer=tokenizer
     )
 
-    # Decode and return the RAG-optimized response
-    reconstructed_text = tokenizer.decode(reconstructed_query[0], skip_special_tokens=True)
+    # Decode and return the response
+    response_text = tokenizer.decode(reconstructed_query[0], skip_special_tokens=True)
     return {
-        "reconstructed_query": reconstructed_text,
+        "reconstructed_query": response_text,
         "rag_scores": rag_scores,
         "retrieved_indices": retrieved_indices
     }
 
 # Example usage
-"""
-conversation_history = [
-    "I'm interested in renewable energy technologies.",
-    "Do you have more information on sustainable agriculture?",
-    "What is the latest in electric vehicle innovations?"
-]
+if __name__ == "__main__":
+    conversation_history = [
+        "I'm interested in renewable energy technologies.",
+        "Do you have more information on sustainable agriculture?",
+        "What is the latest in electric vehicle innovations?"
+    ]
+    query = "Can you provide details on new solar panel developments?"
 
-# Perform RAG with HyPE-enhanced responses
-query = "Can you provide details on new solar panel developments?"
-rag_result = perform_rag_with_hype(query, conversation_history)
+    # Run RAG with HyPE-enhanced retrieval
+    rag_result = perform_rag_with_hype(query, conversation_history)
 
-# Display the enhanced RAG result
-print(f"Reconstructed Query: {rag_result['reconstructed_query']}")
-print(f"RAG Scores: {rag_result['rag_scores']}")
-print(f"Retrieved Document Indices: {rag_result['retrieved_indices']}")
-"""
+    # Display the RAG-enhanced result
+    print(f"Reconstructed Query: {rag_result['reconstructed_query']}")
+    print(f"RAG Scores: {rag_result['rag_scores']}")
+    print(f"Retrieved Document Indices: {rag_result['retrieved_indices']}")
