@@ -1,5 +1,7 @@
 import time
 import logging
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from database.user_feedback_db import UserFeedbackDB  # Hypothetical feedback database
 from database.pathway_weight_db import PathwayWeightDB  # Hypothetical pathway weight database
 import yaml
@@ -7,7 +9,7 @@ import yaml
 class ReinforcementManager:
     def __init__(self, config_path: str = "config/config.yaml"):
         """
-        Initializes the ReinforcementManager with configurations, databases, and logging.
+        Initializes the ReinforcementManager with configurations, sentiment model, databases, and logging.
         :param config_path: Path to the configuration YAML file.
         """
         # Load configuration
@@ -17,6 +19,11 @@ class ReinforcementManager:
         # Set up logging
         self.setup_logging()
         self.logger = logging.getLogger(__name__)
+
+        # Initialize sentiment analysis model and tokenizer
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.sentiment_model = AutoModelForSequenceClassification.from_pretrained(self.config['sentiment_model']['name']).to(self.device)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.config['sentiment_model']['name'])
 
         # Initialize databases
         self.feedback_db = UserFeedbackDB(self.config['database']['feedback_connection_string'])
@@ -42,50 +49,76 @@ class ReinforcementManager:
 
     def adjust_pathway_weights(self):
         """
-        Iteratively adjust the pathway weights based on user satisfaction feedback.
+        Iteratively adjust pathway weights based on user feedback sentiment.
         """
         while True:
-            # Fetch recent feedback from the feedback database
-            recent_feedback = self.feedback_db.get_recent_feedback()
-            if not recent_feedback:
-                self.logger.info("No recent feedback to process.")
+            # Fetch recent conversation history for feedback
+            recent_conversations = self.feedback_db.get_recent_conversations()
+            if not recent_conversations:
+                self.logger.info("No recent conversations to process.")
                 time.sleep(self.config['reinforcement']['interval'])
                 continue
             
-            # Process each feedback entry
-            for feedback in recent_feedback:
-                pathway_id = feedback['pathway_id']
-                satisfaction = feedback['satisfaction']  # A rating or binary metric for satisfaction
-
-                # Retrieve the current weight for this pathway
-                current_weight = self.weight_db.get_weight(pathway_id)
+            # Process each conversation history entry
+            for conversation in recent_conversations:
+                user_id = conversation['user_id']
+                pathway_id = conversation['pathway_id']
+                user_responses = conversation['responses']
                 
-                # Adjust the weight based on satisfaction feedback
+                # Calculate sentiment score for user responses
+                sentiment_score = self._analyze_sentiment(user_responses)
+                
+                # Classify feedback as positive or negative based on sentiment score
+                if sentiment_score > self.config['reinforcement']['positive_threshold']:
+                    satisfaction = 1  # Positive feedback
+                elif sentiment_score < self.config['reinforcement']['negative_threshold']:
+                    satisfaction = 0  # Negative feedback
+                else:
+                    satisfaction = 0.5  # Neutral or inconclusive feedback
+                
+                # Retrieve and adjust pathway weight based on classified satisfaction
+                current_weight = self.weight_db.get_weight(pathway_id)
                 new_weight = self._calculate_new_weight(current_weight, satisfaction)
                 self.weight_db.update_weight(pathway_id, new_weight)
                 
-                self.logger.info(f"Updated weight for pathway {pathway_id} to {new_weight}")
+                self.logger.info(f"Updated weight for pathway {pathway_id} (User: {user_id}) to {new_weight}")
 
             # Sleep for a configured interval before checking for more feedback
             time.sleep(self.config['reinforcement']['interval'])
+
+    def _analyze_sentiment(self, responses):
+        """
+        Analyze sentiment of user responses and return an aggregated sentiment score.
+        :param responses: List of user response texts.
+        :return: Aggregated sentiment score (0 to 1 scale).
+        """
+        # Tokenize and predict sentiment for each response
+        total_score = 0
+        for response in responses:
+            inputs = self.tokenizer(response, return_tensors="pt", truncation=True, padding=True).to(self.device)
+            with torch.no_grad():
+                outputs = self.sentiment_model(**inputs)
+                probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
+                positive_score = probabilities[0][1].item()  # Assuming index 1 is positive sentiment
+                total_score += positive_score
+
+        # Calculate the average sentiment score for the conversation
+        return total_score / len(responses) if responses else 0.5  # Default to neutral if empty
 
     def _calculate_new_weight(self, current_weight: float, satisfaction: float) -> float:
         """
         Calculate a new weight for a pathway based on satisfaction feedback.
         :param current_weight: The current weight for the pathway.
-        :param satisfaction: User satisfaction metric (e.g., 0 to 1 scale).
+        :param satisfaction: Satisfaction metric based on sentiment (0, 0.5, or 1).
         :return: Adjusted weight.
         """
         learning_rate = self.config['reinforcement']['learning_rate']
         
-        # Simple weight adjustment formula: weighted increase or decrease based on satisfaction
-        if satisfaction > 0.5:  # Assuming >0.5 indicates positive feedback
-            adjustment = learning_rate * satisfaction  # Increase weight slightly
-        else:
-            adjustment = -learning_rate * (1 - satisfaction)  # Decrease weight if satisfaction is low
-        
+        # Adjust weight based on satisfaction
+        adjustment = learning_rate * (satisfaction - 0.5)  # Positive or negative based on satisfaction
         new_weight = current_weight + adjustment
-        # Ensure weight stays within reasonable bounds (e.g., between 0 and 1)
+        
+        # Ensure weight stays within bounds (0 to 1)
         return max(0.0, min(1.0, new_weight))
 
 # Usage:
