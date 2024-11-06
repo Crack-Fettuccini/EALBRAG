@@ -2,6 +2,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from models.memory_attention import MemoryAttention  # Ensure this path is correct
 from collections import deque
+from HyPE import HyPE
 
 class TokenGeneratorWithAttention:
     def __init__(self, model_name="meta-llama/Llama-3.2-3B-Instruct-QLORA_INT4_EO8", max_window_size=2048, attention_threshold=0.1, memory_size=1000):
@@ -30,7 +31,9 @@ class TokenGeneratorWithAttention:
         self.max_window_size = max_window_size
         self.attention_threshold = attention_threshold
         self.memory = deque(maxlen=memory_size)  # Memory storage
-        self.last_output_cache = None  # Cache for last generated result
+
+        # Initialize HyPE
+        self.hype = HyPE()
 
     def track_attention(self, attentions, input_ids):
         """Identify and track important tokens based on attention scores."""
@@ -43,10 +46,6 @@ class TokenGeneratorWithAttention:
 
     def generate_tokens(self, input_prompt, max_length=100, verbose=False):
         """Generate tokens with attention-based memory and sliding window."""
-        # Check if input matches the last prompt; if so, return the cached output
-        if self.last_output_cache and self.last_output_cache["input_prompt"] == input_prompt:
-            return self.last_output_cache["response"]
-
         input_ids = self.tokenizer(input_prompt, return_tensors="pt").input_ids
         attention_mask = torch.ones(input_ids.shape, device=input_ids.device)
         generated = input_ids.clone()  # Clone for sliding window
@@ -85,6 +84,9 @@ class TokenGeneratorWithAttention:
         # Decode generated tokens
         response = self.tokenizer.decode(generated[0], skip_special_tokens=True)
 
-        # Cache the output for future reference
-        self.last_output_cache = {"input_prompt": input_prompt, "response": response}
-        return response
+        # Call HyPE after generation
+        conversation_history = [input_prompt]  # example conversation history
+        retrieved_docs = []  # example documents, replace with actual context if available
+        ground_truths = self.hype.generate_hypothetical_ground_truths(conversation_history, retrieved_docs)
+
+        return response, ground_truths  # Return both generated text and HyPE-generated ground truths
