@@ -38,3 +38,14 @@ trend_analyzer:
   spacy_model: "en_core_web_sm"  # SpaCy model for entity recognition
   top_n_keywords: 10  # Number of top trends (tokens and entities) to return
   entity_types: ['PERSON', 'ORG', 'GPE', 'DATE', 'EVENT']  # Types of entities to track
+
+database:
+  feedback_connection_string: "feedback.db"
+  pathway_connection_string: "pathway_weights.db"
+reinforcement:
+  positive_threshold: 0.7
+  negative_threshold: 0.3
+  learning_rate: 0.1
+  interval: 60  # seconds to wait before checking for new feedback
+sentiment_model:
+  name: "nlptown/bert-base-multilingual-uncased-sentiment"
