@@ -11,8 +11,8 @@ class TokenGeneratorWithAttention:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, 
             output_attentions=True, 
-            torch_dtype=torch.float16  # Optimize memory if needed
-        ).cuda()  # Move model to GPU if available
+            torch_dtype=torch.float16  # Use float16 for efficiency if supported
+        ).cuda()  # Use GPU if available
 
         # Memory attention parameters
         embed_dim = self.model.config.hidden_size
@@ -21,7 +21,7 @@ class TokenGeneratorWithAttention:
         num_lstm_layers = 1
         dropout = 0.1
 
-        # Initialize MemoryAttention
+        # Initialize MemoryAttention for long-term memory
         self.memory_attention = MemoryAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -34,35 +34,45 @@ class TokenGeneratorWithAttention:
         # Initialize other parameters
         self.max_window_size = max_window_size
         self.attention_threshold = attention_threshold
-        self.memory = deque(maxlen=memory_size)  # Memory storage
+        self.memory = deque(maxlen=memory_size)  # Store important tokens in memory
+        self.hype = HyPE()  # Hypothetical grounding model
 
-        # Initialize HyPE for hypothetical grounding
-        self.hype = HyPE()
-
-    def track_attention(self, attentions, input_ids):
-        """Identify and track important tokens based on attention scores."""
+    def track_attention(self, attentions):
+        """
+        Identify important tokens based on attention scores.
+        
+        :param attentions: Attention scores from the model's forward pass.
+        :return: List of important token IDs.
+        """
         important_tokens = set()
         for layer_attention in attentions:
-            avg_attention = layer_attention.mean(dim=1)  # Average across heads
-            # Track tokens that exceed the attention threshold
-            important_tokens.update((avg_attention > self.attention_threshold).nonzero(as_tuple=True)[1].tolist())
+            avg_attention = layer_attention.mean(dim=1)  # Average attention across heads
+            important_tokens.update(
+                (avg_attention > self.attention_threshold).nonzero(as_tuple=True)[1].tolist()
+            )
         return list(important_tokens)
 
     def generate_tokens(self, input_prompt, max_length=100, verbose=False):
-        """Generate tokens with attention-based memory and sliding window."""
+        """
+        Generate tokens using a sliding window mechanism and track important tokens.
+        
+        :param input_prompt: Input text prompt.
+        :param max_length: Maximum number of tokens to generate.
+        :param verbose: If True, print each generated token.
+        :return: Generated response and hypothetical ground truths.
+        """
+        # Encode the input prompt
         input_ids = self.tokenizer(input_prompt, return_tensors="pt").input_ids.cuda()
-        attention_mask = torch.ones(input_ids.shape, device=input_ids.device)
-        generated = input_ids.clone()  # Clone for sliding window
+        attention_mask = torch.ones_like(input_ids, device=input_ids.device)
+        generated = input_ids.clone()
 
         for _ in range(max_length):
-            # Forward pass to get logits and attention scores
+            # Forward pass through the model
             outputs = self.model(input_ids=generated, attention_mask=attention_mask)
-            logits = outputs.logits
-            attentions = outputs.attentions
+            logits, attentions = outputs.logits, outputs.attentions
 
-            # Track important tokens using attention
-            important_tokens = self.track_attention(attentions, generated)
-            # Update memory with new important tokens, ensuring no duplicates
+            # Track important tokens based on attention scores
+            important_tokens = self.track_attention(attentions)
             self.memory.extend(tok for tok in important_tokens if tok not in self.memory)
 
             # Generate next token
@@ -70,27 +80,23 @@ class TokenGeneratorWithAttention:
             next_token_id = torch.argmax(next_token_logits, dim=-1).unsqueeze(0)
             generated = torch.cat([generated, next_token_id], dim=1)
 
-            # Sliding window to prevent exceeding max window size
-            if generated.shape[1] > self.max_window_size:
+            # Manage the sliding window
+            if generated.size(1) > self.max_window_size:
                 generated = generated[:, -self.max_window_size:]
 
-            attention_mask = torch.ones(generated.shape, device=generated.device)
+            attention_mask = torch.ones_like(generated, device=generated.device)
 
-            # Optional verbose logging of each generated token
             if verbose:
-                next_token = self.tokenizer.decode(next_token_id)
-                print(f"Generated Token: {next_token}")
+                print(f"Generated Token: {self.tokenizer.decode(next_token_id)}")
 
-            # Stop if EOS token is generated
+            # Stop generation if the EOS token is encountered
             if next_token_id.item() == self.tokenizer.eos_token_id:
                 break
 
-        # Decode generated tokens
+        # Decode the generated response
         response = self.tokenizer.decode(generated[0], skip_special_tokens=True)
 
-        # HyPE for hypothetical ground truth generation
-        conversation_history = [input_prompt]
-        retrieved_docs = []  # Replace with actual documents
-        ground_truths = self.hype.generate_hypothetical_ground_truths(conversation_history, retrieved_docs)
+        # Use HyPE to generate hypothetical ground truths
+        ground_truths = self.hype.generate_hypothetical_ground_truths([input_prompt], [])
 
-        return response, ground_truths  # Return both generated text and HyPE-generated ground truths
+        return response, ground_truths
