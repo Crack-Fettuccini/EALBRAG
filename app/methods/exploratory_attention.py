@@ -24,8 +24,8 @@ class DynamicReindexingRAG(torch.nn.Module):
         generated_tokens = []
         current_query = query
         
-        for _ in range(max_steps):
-            # Recalculate document importance at each step
+        for step in range(max_steps):
+            # Reorder documents dynamically at each step
             reordered_docs = self.reorder_documents(current_query, documents)
             
             # Create dense matrix from reordered documents
@@ -34,10 +34,10 @@ class DynamicReindexingRAG(torch.nn.Module):
             # Compute the next token's attention output
             attention_output = self.compute_attention(current_query, dense_matrix)
             
-            # Simulate token generation and update the query
+            # Store generated token
             generated_tokens.append(attention_output)
             
-            # Update query based on current context (simple mean pooling for this example)
+            # Update the query embedding using the context from the attention output
             current_query = self.update_query(current_query, attention_output)
         
         return torch.stack(generated_tokens, dim=1)
@@ -53,7 +53,7 @@ class DynamicReindexingRAG(torch.nn.Module):
         """
         attention_scores = self.compute_attention_scores(query, documents)
         
-        # Calculate probability for each document
+        # Calculate probability for each document based on its attention score
         probabilities = torch.exp(attention_scores)
         
         # Sort documents by their relevance (descending order)
@@ -126,7 +126,7 @@ class DynamicReindexingRAG(torch.nn.Module):
         Returns:
             Updated query tensor (batch_size, query_len, embed_dim)
         """
-        # For simplicity, update query by concatenating and pooling the attention output
+        # For simplicity, update query by combining query and attention output
         updated_query = (query.mean(dim=1) + attention_output) / 2
         return updated_query.unsqueeze(1).expand_as(query)
 
