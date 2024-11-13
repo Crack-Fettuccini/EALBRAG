@@ -1,82 +1,134 @@
 import torch
 import torch.nn.functional as F
 
-class ExploratoryAttention(torch.nn.Module):
+class DynamicReindexingRAG(torch.nn.Module):
     def __init__(self, embed_dim):
-        super(ExploratoryAttention, self).__init__()
+        super(DynamicReindexingRAG, self).__init__()
         self.embed_dim = embed_dim
         
-        # Linear layers for transforming input embeddings
+        # Linear layers for transforming query and document embeddings
         self.query_linear = torch.nn.Linear(embed_dim, embed_dim)
         self.key_linear = torch.nn.Linear(embed_dim, embed_dim)
         self.value_linear = torch.nn.Linear(embed_dim, embed_dim)
         
-    def forward(self, query, indexed_docs, hypothetical_docs, lambda_factor=1.0):
+    def forward(self, query, documents, max_steps=10):
         """
-        Implements exploratory attention mechanism
+        Implements dynamic reindexing and reordering for RAG
         Args:
             query: The query tensor (batch_size, query_len, embed_dim)
-            indexed_docs: The indexed documents (batch_size, num_indexed_docs, doc_len, embed_dim)
-            hypothetical_docs: The hypothetical documents (batch_size, num_hypothetical_docs, doc_len, embed_dim)
-            lambda_factor: The scaling factor for hypothetical documents
+            documents: The documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            max_steps: Maximum number of token generation steps
         Returns:
-            Attention output tensor
+            Generated token predictions (batch_size, max_steps, embed_dim)
         """
-        # Transform query, indexed_docs, and hypothetical_docs to the appropriate shape
-        query_transformed = self.query_linear(query)  # (batch_size, query_len, embed_dim)
-        indexed_docs_transformed = self.key_linear(indexed_docs)  # (batch_size, num_indexed_docs, doc_len, embed_dim)
-        hypothetical_docs_transformed = self.key_linear(hypothetical_docs)  # (batch_size, num_hypothetical_docs, doc_len, embed_dim)
+        generated_tokens = []
+        current_query = query
+        
+        for _ in range(max_steps):
+            # Recalculate document importance at each step
+            reordered_docs = self.reorder_documents(current_query, documents)
+            
+            # Create dense matrix from reordered documents
+            dense_matrix = self.create_dense_matrix(reordered_docs)
+            
+            # Compute the next token's attention output
+            attention_output = self.compute_attention(current_query, dense_matrix)
+            
+            # Simulate token generation and update the query
+            generated_tokens.append(attention_output)
+            
+            # Update query based on current context (simple mean pooling for this example)
+            current_query = self.update_query(current_query, attention_output)
+        
+        return torch.stack(generated_tokens, dim=1)
 
-        # Compute attention scores for indexed documents
-        indexed_attention_scores = self.compute_attention(query_transformed, indexed_docs_transformed)
+    def reorder_documents(self, query, documents):
+        """
+        Dynamically reorder documents based on their importance for the next token generation
+        Args:
+            query: The current query tensor (batch_size, query_len, embed_dim)
+            documents: The documents tensor (batch_size, num_docs, doc_len, embed_dim)
+        Returns:
+            Reordered documents tensor (batch_size, num_docs, doc_len, embed_dim)
+        """
+        attention_scores = self.compute_attention_scores(query, documents)
         
-        # Compute attention scores for hypothetical documents
-        hypothetical_attention_scores = self.compute_attention(query_transformed, hypothetical_docs_transformed)
+        # Calculate probability for each document
+        probabilities = torch.exp(attention_scores)
         
-        # Combine the attention scores
-        augmented_attention_scores = lambda_factor * hypothetical_attention_scores + indexed_attention_scores
+        # Sort documents by their relevance (descending order)
+        sorted_indices = torch.argsort(probabilities, dim=1, descending=True)
         
-        # Use the augmented attention scores to get the contextually relevant values
-        augmented_docs = torch.cat([indexed_docs, hypothetical_docs], dim=1)  # Concatenate indexed and hypothetical docs
+        # Reorder the documents based on the sorted indices
+        reordered_docs = torch.gather(documents, 1, sorted_indices.unsqueeze(-1).expand(-1, -1, documents.size(2), documents.size(3)))
         
-        # Compute attention output (contextualized values)
-        attention_output = self.compute_attention_output(augmented_attention_scores, augmented_docs)
+        return reordered_docs
+
+    def create_dense_matrix(self, documents):
+        """
+        Creates a dense matrix from reordered documents
+        Args:
+            documents: Reordered documents tensor (batch_size, num_docs, doc_len, embed_dim)
+        Returns:
+            Dense matrix tensor (batch_size, num_docs, embed_dim)
+        """
+        # Flatten the document matrix to make it suitable for attention mechanism
+        dense_matrix = documents.view(documents.size(0), -1, self.embed_dim)
+        return dense_matrix
+
+    def compute_attention(self, query, dense_matrix):
+        """
+        Compute attention output for the next token generation
+        Args:
+            query: The query tensor (batch_size, query_len, embed_dim)
+            dense_matrix: The dense matrix of documents (batch_size, num_docs, embed_dim)
+        Returns:
+            Attention output tensor (batch_size, embed_dim)
+        """
+        # Compute attention scores between query and dense matrix using dot-product attention
+        attention_scores = self.compute_attention_scores(query, dense_matrix)
+        
+        # Normalize attention scores using softmax to get attention weights
+        attention_weights = F.softmax(attention_scores, dim=-1)
+        
+        # Compute weighted sum of documents based on attention weights
+        attention_output = torch.matmul(attention_weights, dense_matrix)
         
         return attention_output
 
-    def compute_attention(self, query, doc):
+    def compute_attention_scores(self, query, documents):
         """
-        Compute attention scores between query and document
+        Compute attention scores between query and documents
         Args:
             query: The query tensor (batch_size, query_len, embed_dim)
-            doc: The document tensor (batch_size, num_docs, doc_len, embed_dim)
+            documents: The documents tensor (batch_size, num_docs, doc_len, embed_dim)
         Returns:
-            Attention scores tensor
+            Attention scores tensor (batch_size, query_len, num_docs)
         """
-        # Compute the dot product between query and document key
-        scores = torch.matmul(query, doc.transpose(-2, -1))  # (batch_size, query_len, num_docs, doc_len)
+        # Transform query and documents to the same dimension for dot-product
+        query_transformed = self.query_linear(query)  # (batch_size, query_len, embed_dim)
+        doc_transformed = self.key_linear(documents)  # (batch_size, num_docs, doc_len, embed_dim)
+        
+        # Compute the dot-product between query and document vectors
+        scores = torch.matmul(query_transformed, doc_transformed.transpose(-2, -1))  # (batch_size, query_len, num_docs, doc_len)
         
         # Normalize scores using softmax to get attention weights
-        attention_scores = F.softmax(scores, dim=-1)
+        attention_scores = scores.sum(dim=-1)  # Summing over doc_len to get a scalar score
         
         return attention_scores
 
-    def compute_attention_output(self, attention_scores, doc):
+    def update_query(self, query, attention_output):
         """
-        Apply attention scores to document values
+        Update query based on generated token context (simple mean pooling)
         Args:
-            attention_scores: Attention scores (batch_size, query_len, num_docs, doc_len)
-            doc: Document tensor (batch_size, num_docs, doc_len, embed_dim)
+            query: The current query tensor (batch_size, query_len, embed_dim)
+            attention_output: The attention output tensor (batch_size, embed_dim)
         Returns:
-            Attention output tensor
+            Updated query tensor (batch_size, query_len, embed_dim)
         """
-        # Compute weighted sum of document values
-        attention_output = torch.matmul(attention_scores, doc)  # (batch_size, query_len, num_docs, embed_dim)
-        
-        # Reduce to a final representation for each query by summing along the query dimension
-        attention_output = attention_output.sum(dim=1)  # (batch_size, num_docs, embed_dim)
-        
-        return attention_output
+        # For simplicity, update query by concatenating and pooling the attention output
+        updated_query = (query.mean(dim=1) + attention_output) / 2
+        return updated_query.unsqueeze(1).expand_as(query)
 
 
 # Example Usage:
@@ -85,18 +137,17 @@ batch_size = 2
 query_len = 3
 doc_len = 4
 embed_dim = 5
-num_indexed_docs = 6
-num_hypothetical_docs = 4
+num_docs = 6
+max_steps = 10
 
 # Example input data
 query = torch.randn(batch_size, query_len, embed_dim)  # (batch_size, query_len, embed_dim)
-indexed_docs = torch.randn(batch_size, num_indexed_docs, doc_len, embed_dim)  # (batch_size, num_indexed_docs, doc_len, embed_dim)
-hypothetical_docs = torch.randn(batch_size, num_hypothetical_docs, doc_len, embed_dim)  # (batch_size, num_hypothetical_docs, doc_len, embed_dim)
+documents = torch.randn(batch_size, num_docs, doc_len, embed_dim)  # (batch_size, num_docs, doc_len, embed_dim)
 
-# Initialize the ExploratoryAttention module
-exploratory_attention = ExploratoryAttention(embed_dim)
+# Initialize the DynamicReindexingRAG module
+rag_model = DynamicReindexingRAG(embed_dim)
 
-# Forward pass through the exploratory attention mechanism
-attention_output = exploratory_attention(query, indexed_docs, hypothetical_docs, lambda_factor=1.0)
+# Generate response iteratively with document reordering
+generated_tokens = rag_model(query, documents, max_steps=max_steps)
 
-print("Attention Output Shape:", attention_output.shape)  # Expected shape: (batch_size, num_docs, embed_dim)
+print("Generated Tokens Shape:", generated_tokens.shape)  # Expected shape: (batch_size, max_steps, embed_dim)
