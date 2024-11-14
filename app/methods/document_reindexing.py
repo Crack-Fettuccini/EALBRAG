@@ -134,9 +134,11 @@ class DocumentReindexing(nn.Module):
 
         return reordered_text_docs, reordered_image_docs
 
-def dp_reordering(model, tokenizer, query, chunk_texts, prompt_text):
+def dp_reordering_with_attention_optimization(
+    model, tokenizer, query, chunk_texts, prompt_text
+):
     """
-    Dynamic programming for reordering document chunks to maximize next-token probability.
+    Dynamic programming for reordering document chunks with attention optimization to maximize next-token probability.
     
     Args:
         model: The language model (e.g., LLaMA).
@@ -195,3 +197,34 @@ def dp_reordering(model, tokenizer, query, chunk_texts, prompt_text):
     best_score = dp[frozenset(range(num_chunks))]
     
     return best_sequence, best_score
+
+class DocumentReindexingWithDP(DocumentReindexing):
+    def __init__(self, embed_dim: int, num_heads: int = 8):
+        super(DocumentReindexingWithDP, self).__init__(embed_dim, num_heads)
+
+    def reorder_and_optimize(self, model, tokenizer, query, chunk_texts, prompt_text, documents: torch.Tensor, chunk_sizes: List[int]) -> Tuple[torch.Tensor, float]:
+        """
+        Reorder documents using attention-based mechanism and optimize chunk sequence with dynamic programming.
+        
+        Args:
+            model: The language model (e.g., LLaMA).
+            tokenizer: Tokenizer for the language model.
+            query: Initial query tensor.
+            chunk_texts: List of document chunks (texts).
+            prompt_text: Initial prompt text (as query context).
+            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim).
+            chunk_sizes: List of chunk sizes for each document in the batch.
+
+        Returns:
+            reordered_documents: Reordered documents tensor.
+            best_score: The highest probability for the next token.
+        """
+        # Reorder documents using attention mechanism
+        reordered_docs = self.reorder_documents(query, documents)
+
+        # Optimize chunk sequence using dynamic programming
+        best_sequence, best_score = dp_reordering_with_attention_optimization(
+            model, tokenizer, query, chunk_texts, prompt_text
+        )
+
+        return reordered_docs, best_score
