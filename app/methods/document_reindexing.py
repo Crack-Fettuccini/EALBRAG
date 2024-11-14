@@ -1,142 +1,129 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from typing import Tuple, Optional
 
 class DocumentReindexing(nn.Module):
-    def __init__(self, embed_dim, num_heads=8, chunk_size=512):
+    def __init__(self, embed_dim: int, num_heads: int = 8, chunk_size: int = 512):
         super(DocumentReindexing, self).__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.chunk_size = chunk_size
-        
-        # Linear layers for transforming query and document embeddings
+
+        # Linear layers for query, key, and value transformations
         self.query_linear = nn.Linear(embed_dim, embed_dim)
         self.key_linear = nn.Linear(embed_dim, embed_dim)
         self.value_linear = nn.Linear(embed_dim, embed_dim)
 
-        # Multi-Head Attention
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads)
+        # Multi-head attention module
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
 
-    def reorder_documents(self, query, documents):
+    def reorder_documents(self, query: torch.Tensor, documents: torch.Tensor) -> torch.Tensor:
         """
-        Dynamically reorder documents based on their importance for the next token generation.
+        Dynamically reorder documents based on their importance for the query.
+        
         Args:
-            query: The current query tensor (batch_size, query_len, embed_dim)
-            documents: The documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            query: Query tensor (batch_size, query_len, embed_dim)
+            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
+        
         Returns:
-            reordered_documents: Reordered documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            reordered_documents: Tensor of reordered documents (batch_size, num_docs, doc_len, embed_dim)
         """
-        # Step 1: Compute multi-head attention scores
         attention_weights = self.compute_attention(query, documents)
-        
-        # Step 2: Apply softmax and reorder documents based on computed attention weights
-        attention_weights = F.softmax(attention_weights, dim=-1)  # Normalize across document axis
+        attention_weights = F.softmax(attention_weights, dim=1)  # Normalize across the document axis
         reordered_docs = self.apply_attention_reordering(documents, attention_weights)
-        
         return reordered_docs
 
-    def compute_attention(self, query, documents):
+    def compute_attention(self, query: torch.Tensor, documents: torch.Tensor) -> torch.Tensor:
         """
-        Compute multi-head attention between query and documents.
+        Compute multi-head attention between the query and documents.
+        
         Args:
-            query: The query tensor (batch_size, query_len, embed_dim)
-            documents: The documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            query: Query tensor (batch_size, query_len, embed_dim)
+            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
+        
         Returns:
-            attention_weights: The attention weights between query and documents (batch_size, query_len, num_docs)
+            attention_weights: Attention weights (batch_size, num_docs, query_len)
         """
-        # Transform query and documents using linear layers
+        batch_size, num_docs, doc_len, _ = documents.size()
         query_transformed = self.query_linear(query)  # (batch_size, query_len, embed_dim)
         doc_transformed = self.key_linear(documents)  # (batch_size, num_docs, doc_len, embed_dim)
 
-        # Reshaping for multi-head attention
-        query_reshaped = query_transformed.permute(1, 0, 2)  # (query_len, batch_size, embed_dim)
-        doc_reshaped = doc_transformed.view(documents.size(0), documents.size(1)*documents.size(2), -1)  # (batch_size, num_docs * doc_len, embed_dim)
+        # Flatten documents to (batch_size, num_docs * doc_len, embed_dim)
+        doc_flat = doc_transformed.view(batch_size, num_docs * doc_len, -1)
 
-        # Apply multi-head attention
-        attn_output, attn_weights = self.attn(query_reshaped, doc_reshaped, doc_reshaped)
-        
-        # Attention weights are returned as (batch_size, num_docs, query_len)
-        attn_weights = attn_weights.permute(1, 2, 0)  # Transpose to (batch_size, num_docs, query_len)
-        
+        # Compute attention weights
+        _, attn_weights = self.attn(query_transformed, doc_flat, doc_flat)
+
+        # Reshape attention weights to (batch_size, num_docs, query_len)
+        attn_weights = attn_weights.view(batch_size, num_docs, doc_len, query.size(1)).sum(dim=2)
         return attn_weights
 
-    def apply_attention_reordering(self, documents, attention_weights):
+    def apply_attention_reordering(self, documents: torch.Tensor, attention_weights: torch.Tensor) -> torch.Tensor:
         """
-        Reorder documents based on attention weights (sorted by relevance to the query).
-        Args:
-            documents: The documents tensor (batch_size, num_docs, doc_len, embed_dim)
-            attention_weights: The attention scores (batch_size, query_len, num_docs)
-        Returns:
-            reordered_documents: The reordered documents based on attention scores (batch_size, num_docs, doc_len, embed_dim)
-        """
-        # Select the most relevant documents based on attention weights
-        # We calculate the most relevant documents by considering the max attention score across the query
-        attention_scores, sorted_indices = attention_weights.max(dim=2)  # (batch_size, num_docs)
+        Reorder documents based on attention weights.
         
-        # Reorder the documents based on the sorted attention weights
-        reordered_docs = torch.gather(documents, 1, sorted_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, documents.size(2), documents.size(3)))
+        Args:
+            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            attention_weights: Attention scores (batch_size, num_docs, query_len)
+        
+        Returns:
+            reordered_documents: Reordered documents tensor (batch_size, num_docs, doc_len, embed_dim)
+        """
+        # Max attention score across query dimension for sorting
+        relevance_scores, sorted_indices = attention_weights.mean(dim=-1).sort(dim=1, descending=True)
+
+        # Gather documents according to sorted indices
+        batch_size, num_docs, doc_len, embed_dim = documents.shape
+        sorted_indices_exp = sorted_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, doc_len, embed_dim)
+        reordered_docs = torch.gather(documents, 1, sorted_indices_exp)
         
         return reordered_docs
 
-    def chunk_documents(self, documents, chunk_size=None):
+    def chunk_documents(self, documents: torch.Tensor, chunk_size: Optional[int] = None) -> torch.Tensor:
         """
-        Split documents into smaller chunks of a specified size.
+        Split documents into smaller chunks.
+        
         Args:
-            documents: The documents tensor (batch_size, num_docs, doc_len, embed_dim)
-            chunk_size: The chunk size for dividing documents (default to self.chunk_size)
+            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            chunk_size: Chunk size for dividing documents
+        
         Returns:
-            chunked_docs: A tensor of chunked documents (batch_size, num_chunks, chunk_size, embed_dim)
+            chunked_docs: Tensor of chunked documents
         """
         chunk_size = chunk_size or self.chunk_size
-        num_chunks = (documents.size(2) + chunk_size - 1) // chunk_size  # Calculate number of chunks
-        chunked_docs = []
-        
-        for i in range(num_chunks):
-            chunk = documents[:, :, i * chunk_size: (i + 1) * chunk_size, :]
-            chunked_docs.append(chunk)
-        
-        return torch.cat(chunked_docs, dim=2)  # (batch_size, num_docs, chunked_len, embed_dim)
+        batch_size, num_docs, doc_len, embed_dim = documents.shape
+        num_chunks = (doc_len + chunk_size - 1) // chunk_size
 
-    def handle_multimodal_inputs(self, text_query, text_documents, image_documents):
+        # Generate chunked documents
+        chunked_docs = torch.cat([documents[:, :, i*chunk_size:(i+1)*chunk_size, :]
+                                  for i in range(num_chunks)], dim=2)
+        return chunked_docs
+
+    def handle_multimodal_inputs(
+        self,
+        text_query: torch.Tensor,
+        text_documents: torch.Tensor,
+        image_documents: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Handle both textual and visual documents by applying attention across multiple modalities.
+        Handle both text and image documents with a unified attention mechanism.
+        
         Args:
-            text_query: The query tensor for text (batch_size, query_len, embed_dim)
-            text_documents: The text documents tensor (batch_size, num_docs, doc_len, embed_dim)
-            image_documents: The image documents tensor (batch_size, num_docs, img_len, embed_dim)
+            text_query: Query tensor for text (batch_size, query_len, embed_dim)
+            text_documents: Text documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            image_documents: Image documents tensor (batch_size, num_docs, img_len, embed_dim)
+        
         Returns:
-            reordered_text_docs: Reordered text documents based on attention weights
-            reordered_image_docs: Reordered image documents based on attention weights
+            reordered_text_docs: Reordered text documents tensor
+            reordered_image_docs: Reordered image documents tensor
         """
         text_attention_weights = self.compute_attention(text_query, text_documents)
         image_attention_weights = self.compute_attention(text_query, image_documents)
-        
-        # Combine text and image attention weights (e.g., averaging or concatenation)
+
         combined_attention_weights = (text_attention_weights + image_attention_weights) / 2
-        
-        # Reorder text and image documents based on combined attention
+
         reordered_text_docs = self.apply_attention_reordering(text_documents, combined_attention_weights)
         reordered_image_docs = self.apply_attention_reordering(image_documents, combined_attention_weights)
-        
+
         return reordered_text_docs, reordered_image_docs
-
-
-# Example Usage:
-# Define embedding dimensions and other parameters
-embed_dim = 256
-batch_size = 4
-num_docs = 10
-doc_len = 100
-query_len = 5
-
-# Initialize the Document Reindexing model
-model = DocumentReindexing(embed_dim)
-
-# Generate random data for query and documents
-query = torch.randn(batch_size, query_len, embed_dim)  # (batch_size, query_len, embed_dim)
-documents = torch.randn(batch_size, num_docs, doc_len, embed_dim)  # (batch_size, num_docs, doc_len, embed_dim)
-
-# Reorder documents based on attention mechanism
-reordered_docs = model.reorder_documents(query, documents)
-print(reordered_docs.shape)  # (batch_size, num_docs, doc_len, embed_dim)
