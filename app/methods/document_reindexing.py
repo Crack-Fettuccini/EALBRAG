@@ -1,134 +1,80 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, List
+from transformers import LlamaForCausalLM, LlamaTokenizer
+from itertools import permutations
 
-class DocumentReindexing(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int = 8):
-        super(DocumentReindexing, self).__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
+class DocumentReindexingExhaustive:
+    def __init__(self, lm_model_name="meta-llama/Llama-2-7b-hf"):
+        # Load the LLaMA 2 model and tokenizer
+        self.lm_model = LlamaForCausalLM.from_pretrained(lm_model_name).eval()
+        self.tokenizer = LlamaTokenizer.from_pretrained(lm_model_name)
 
-        # Linear layers for query, key, and value transformations
-        self.query_linear = nn.Linear(embed_dim, embed_dim)
-        self.key_linear = nn.Linear(embed_dim, embed_dim)
-        self.value_linear = nn.Linear(embed_dim, embed_dim)
-
-        # Multi-head attention module
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-
-    def reorder_documents(self, query: torch.Tensor, documents: torch.Tensor) -> torch.Tensor:
+    def reorder_chunks_exhaustive(self, query, chunks, prompt_text):
         """
-        Dynamically reorder documents based on their importance for the query.
+        Exhaustively reorder chunks to maximize next-token probability.
         
         Args:
             query: Query tensor (batch_size, query_len, embed_dim)
-            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
+            chunks: Document chunks tensor (batch_size, num_chunks, chunk_len, embed_dim)
+            prompt_text: Text query to guide token prediction
         
         Returns:
-            reordered_documents: Tensor of reordered documents (batch_size, num_docs, doc_len, embed_dim)
+            optimal_permutation: The permutation of chunks that maximizes the next-token probability.
+            max_probability: The maximum probability achieved for the next token.
         """
-        attention_weights = self.compute_attention(query, documents)
-        attention_weights = F.softmax(attention_weights, dim=1)  # Normalize across the document axis
-        reordered_docs = self.apply_attention_reordering(documents, attention_weights)
-        return reordered_docs
-
-    def compute_attention(self, query: torch.Tensor, documents: torch.Tensor) -> torch.Tensor:
-        """
-        Compute multi-head attention between the query and documents.
+        batch_size, num_chunks, chunk_len, embed_dim = chunks.size()
         
-        Args:
-            query: Query tensor (batch_size, query_len, embed_dim)
-            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
-        
-        Returns:
-            attention_weights: Attention weights (batch_size, num_docs, query_len)
-        """
-        batch_size, num_docs, doc_len, _ = documents.size()
-        query_transformed = self.query_linear(query)  # (batch_size, query_len, embed_dim)
-        doc_transformed = self.key_linear(documents)  # (batch_size, num_docs, doc_len, embed_dim)
+        # Flatten chunks for easier manipulation and tokenization
+        chunk_texts = [
+            self.tokenizer.decode(chunk.argmax(dim=-1).flatten().tolist())
+            for chunk in chunks[0]  # Assuming batch_size = 1 for simplicity
+        ]
 
-        # Flatten documents to (batch_size, num_docs * doc_len, embed_dim)
-        doc_flat = doc_transformed.view(batch_size, num_docs * doc_len, -1)
+        max_probability = -float('inf')
+        optimal_permutation = None
 
-        # Compute attention weights
-        _, attn_weights = self.attn(query_transformed, doc_flat, doc_flat)
+        # Process prompt text to create a context
+        input_ids = self.tokenizer(prompt_text, return_tensors="pt").input_ids.to(chunks.device)
 
-        # Reshape attention weights to (batch_size, num_docs, doc_len)
-        attn_weights = attn_weights.view(batch_size, num_docs, doc_len, query.size(1)).sum(dim=2)
-        return attn_weights
+        # Try every permutation of the chunks
+        for perm in permutations(chunk_texts):
+            # Concatenate query and current permutation of chunks
+            permuted_text = prompt_text + " " + " ".join(perm)
+            permuted_ids = self.tokenizer(permuted_text, return_tensors="pt").input_ids.to(chunks.device)
+            
+            # Pass through the model
+            with torch.no_grad():
+                outputs = self.lm_model(permuted_ids)
+                next_token_logits = outputs.logits[:, -1, :]  # Get the logits for the next token
 
-    def apply_attention_reordering(self, documents: torch.Tensor, attention_weights: torch.Tensor) -> torch.Tensor:
-        """
-        Reorder documents based on attention weights.
-        
-        Args:
-            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
-            attention_weights: Attention scores (batch_size, num_docs, query_len)
-        
-        Returns:
-            reordered_documents: Reordered documents tensor (batch_size, num_docs, doc_len, embed_dim)
-        """
-        relevance_scores, sorted_indices = attention_weights.mean(dim=-1).sort(dim=1, descending=True)
+            # Compute probability of the most likely next token
+            next_token_probs = F.softmax(next_token_logits, dim=-1)
+            predicted_token = next_token_probs.argmax(dim=-1)
+            predicted_token_prob = next_token_probs[0, predicted_token].item()
 
-        # Gather documents according to sorted indices
-        batch_size, num_docs, doc_len, embed_dim = documents.shape
-        sorted_indices_exp = sorted_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, doc_len, embed_dim)
-        reordered_docs = torch.gather(documents, 1, sorted_indices_exp)
-        
-        return reordered_docs
+            # Update optimal permutation if current one is better
+            if predicted_token_prob > max_probability:
+                max_probability = predicted_token_prob
+                optimal_permutation = perm
 
-    def chunk_documents(self, documents: torch.Tensor, chunk_sizes: List[int]) -> List[torch.Tensor]:
-        """
-        Split documents into variable-sized chunks.
-        
-        Args:
-            documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
-            chunk_sizes: List of chunk sizes for each document in the batch
-        
-        Returns:
-            chunked_docs: List of tensors with variable chunk sizes
-        """
-        batch_size, num_docs, doc_len, embed_dim = documents.size()
-        chunked_docs = []
+        return optimal_permutation, max_probability
 
-        for batch_idx in range(batch_size):
-            batch_chunks = []
-            for doc_idx in range(num_docs):
-                doc = documents[batch_idx, doc_idx]
-                start = 0
-                for chunk_size in chunk_sizes[doc_idx]:
-                    end = min(start + chunk_size, doc_len)
-                    batch_chunks.append(doc[start:end])  # Extract chunk
-                    start = end
-            chunked_docs.append(torch.cat(batch_chunks, dim=0).unsqueeze(0))  # Combine chunks for batch
 
-        return torch.cat(chunked_docs, dim=0)
+# Example Usage
+batch_size = 1
+num_chunks = 3  # Reduce for simplicity; exhaustive search scales factorially
+chunk_len = 10
+embed_dim = 256
 
-    def handle_multimodal_inputs(
-        self,
-        text_query: torch.Tensor,
-        text_documents: torch.Tensor,
-        image_documents: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Handle both text and image documents with a unified attention mechanism.
-        
-        Args:
-            text_query: Query tensor for text (batch_size, query_len, embed_dim)
-            text_documents: Text documents tensor (batch_size, num_docs, doc_len, embed_dim)
-            image_documents: Image documents tensor (batch_size, num_docs, img_len, embed_dim)
-        
-        Returns:
-            reordered_text_docs: Reordered text documents tensor
-            reordered_image_docs: Reordered image documents tensor
-        """
-        text_attention_weights = self.compute_attention(text_query, text_documents)
-        image_attention_weights = self.compute_attention(text_query, image_documents)
+# Generate dummy data
+documents = torch.randn(batch_size, num_chunks, chunk_len, embed_dim)
+query = torch.randn(batch_size, 10, embed_dim)
+prompt_text = "The future of AI is"
 
-        combined_attention_weights = (text_attention_weights + image_attention_weights) / 2
+# Initialize the model
+model = DocumentReindexingExhaustive(lm_model_name="meta-llama/Llama-2-7b-hf")
 
-        reordered_text_docs = self.apply_attention_reordering(text_documents, combined_attention_weights)
-        reordered_image_docs = self.apply_attention_reordering(image_documents, combined_attention_weights)
-
-        return reordered_text_docs, reordered_image_docs
+# Get the optimal reordering
+optimal_perm, max_prob = model.reorder_chunks_exhaustive(query, documents, prompt_text)
+print("Optimal Permutation:", optimal_perm)
+print("Max Probability:", max_prob)
