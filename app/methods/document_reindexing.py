@@ -1,14 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 class DocumentReindexing(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int = 8, chunk_size: int = 512):
+    def __init__(self, embed_dim: int, num_heads: int = 8):
         super(DocumentReindexing, self).__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.chunk_size = chunk_size
 
         # Linear layers for query, key, and value transformations
         self.query_linear = nn.Linear(embed_dim, embed_dim)
@@ -55,7 +54,7 @@ class DocumentReindexing(nn.Module):
         # Compute attention weights
         _, attn_weights = self.attn(query_transformed, doc_flat, doc_flat)
 
-        # Reshape attention weights to (batch_size, num_docs, query_len)
+        # Reshape attention weights to (batch_size, num_docs, doc_len)
         attn_weights = attn_weights.view(batch_size, num_docs, doc_len, query.size(1)).sum(dim=2)
         return attn_weights
 
@@ -70,7 +69,6 @@ class DocumentReindexing(nn.Module):
         Returns:
             reordered_documents: Reordered documents tensor (batch_size, num_docs, doc_len, embed_dim)
         """
-        # Max attention score across query dimension for sorting
         relevance_scores, sorted_indices = attention_weights.mean(dim=-1).sort(dim=1, descending=True)
 
         # Gather documents according to sorted indices
@@ -80,25 +78,32 @@ class DocumentReindexing(nn.Module):
         
         return reordered_docs
 
-    def chunk_documents(self, documents: torch.Tensor, chunk_size: Optional[int] = None) -> torch.Tensor:
+    def chunk_documents(self, documents: torch.Tensor, chunk_sizes: List[int]) -> List[torch.Tensor]:
         """
-        Split documents into smaller chunks.
+        Split documents into variable-sized chunks.
         
         Args:
             documents: Documents tensor (batch_size, num_docs, doc_len, embed_dim)
-            chunk_size: Chunk size for dividing documents
+            chunk_sizes: List of chunk sizes for each document in the batch
         
         Returns:
-            chunked_docs: Tensor of chunked documents
+            chunked_docs: List of tensors with variable chunk sizes
         """
-        chunk_size = chunk_size or self.chunk_size
-        batch_size, num_docs, doc_len, embed_dim = documents.shape
-        num_chunks = (doc_len + chunk_size - 1) // chunk_size
+        batch_size, num_docs, doc_len, embed_dim = documents.size()
+        chunked_docs = []
 
-        # Generate chunked documents
-        chunked_docs = torch.cat([documents[:, :, i*chunk_size:(i+1)*chunk_size, :]
-                                  for i in range(num_chunks)], dim=2)
-        return chunked_docs
+        for batch_idx in range(batch_size):
+            batch_chunks = []
+            for doc_idx in range(num_docs):
+                doc = documents[batch_idx, doc_idx]
+                start = 0
+                for chunk_size in chunk_sizes[doc_idx]:
+                    end = min(start + chunk_size, doc_len)
+                    batch_chunks.append(doc[start:end])  # Extract chunk
+                    start = end
+            chunked_docs.append(torch.cat(batch_chunks, dim=0).unsqueeze(0))  # Combine chunks for batch
+
+        return torch.cat(chunked_docs, dim=0)
 
     def handle_multimodal_inputs(
         self,
