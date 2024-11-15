@@ -2,7 +2,7 @@ import unittest
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.testing import assert_allclose
+from torch.testing import assert_close
 from unittest.mock import MagicMock
 from models.document_reindexing import DocumentReindexing, DocumentReindexingWithDP, dp_reordering_with_attention_optimization
 class TestDocumentReindexing(unittest.TestCase):
