@@ -85,3 +85,4 @@ wcwidth==0.2.13
 weasel==0.4.1
 Werkzeug==3.0.6
 wrapt==1.16.0
+chromadb
