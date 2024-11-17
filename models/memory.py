@@ -15,7 +15,7 @@ class MemoryBank(nn.Module):
         super(MemoryBank, self).__init__()
         self.embed_dim = embed_dim
         self.max_memory_size = max_memory_size
-        self.current_size = 0  # Tracks current memory size
+        self.current_size = 0  # Keeps track of how much memory is currently stored
         
         # Initialize LSTM Memory for long-term memory encoding
         self.lstm_memory = LSTMMemory(embed_dim, hidden_dim=lstm_hidden_size, num_layers=num_layers)
@@ -23,7 +23,7 @@ class MemoryBank(nn.Module):
         # Memory storage (circular buffer)
         self.keys = torch.zeros((max_memory_size, embed_dim), dtype=torch.float32)
         self.values = torch.zeros((max_memory_size, embed_dim), dtype=torch.float32)
-        self.write_index = 0  # Tracks position for new memory entries
+        self.write_index = 0  # Track the position for new memory entries
 
     def update_memory(self, keys: torch.Tensor, values: torch.Tensor, attention_scores: torch.Tensor, threshold: float = 0.5):
         """

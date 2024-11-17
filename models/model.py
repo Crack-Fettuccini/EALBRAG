@@ -1,106 +1,73 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import numpy as np
-from collections import deque
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# Load the model and tokenizer
-model_name = "meta-llama/Llama-3.2-3B-Instruct-QLORA_INT4_EO8"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name, output_attentions=True)
-
-# Define parameters
-max_window_size = 2048  # Sliding window size (adapt based on model capacity)
-memory_size = 256       # Maximum tokens in LSTM-based memory
-attention_threshold = 0.1  # Threshold for important tokens
-
-# Initialize LSTM-based memory (a deque to store top important tokens)
-memory = deque(maxlen=memory_size)
-
-# Function to track token importance based on attention scores across all heads
-def track_attention_per_head(attentions, input_ids, threshold=attention_threshold):
-    token_attention_info = {}
-    
-    # Iterate over each layer and head, collecting attention scores for each token
-    for layer_idx, layer_attn in enumerate(attentions):
-        # layer_attn shape: (batch_size, num_heads, seq_len, seq_len)
-        avg_attn_per_token = layer_attn.mean(dim=1)  # Average over heads
-        important_tokens = (avg_attn_per_token > threshold).nonzero(as_tuple=True)[1]
-
-        # Initialize dictionary for layer's tokens
-        token_attention_info[layer_idx] = {}
-
-        for head_idx in range(layer_attn.shape[1]):
-            # Attention for current head
-            head_attn = layer_attn[:, head_idx, :, :]
-            for token_idx in range(head_attn.shape[-1]):
-                token_id = input_ids[0, token_idx].item()
-                token = tokenizer.decode([token_id])
-
-                # Store attention scores across heads
-                if token_id not in token_attention_info[layer_idx]:
-                    token_attention_info[layer_idx][token_id] = {
-                        "token": token,
-                        "attention_scores": []
-                    }
-
-                # Append current head's attention score for the token
-                token_attention_info[layer_idx][token_id]["attention_scores"].append(
-                    head_attn[0, token_idx].tolist()  # Per-head score for token
-                )
-
-    return token_attention_info
-
-# Initialize context and generate tokens one at a time
-def generate_response(prompt, max_length=100, verbose=False):
-    # Tokenize input prompt and convert to tensor
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids
-    attention_mask = torch.ones(input_ids.shape, device=input_ids.device)
-    generated = input_ids.clone()  # Clone for sliding window
-
-    # Generate tokens one at a time
-    for _ in range(max_length):
-        # Forward pass to obtain logits and attention
-        outputs = model(input_ids=generated, attention_mask=attention_mask)
-        logits = outputs.logits
-        attentions = outputs.attentions  # Shape: (num_layers, batch, num_heads, seq_len, seq_len)
-
-        # Track detailed per-head attention for each token
-        token_attention_info = track_attention_per_head(attentions, generated)
-        memory.extend([tok for layer_info in token_attention_info.values() 
-                       for tok in layer_info.keys()])  # Update memory with important tokens
-
-        # Sample the next token
-        next_token_logits = logits[:, -1, :]
-        next_token_id = torch.argmax(next_token_logits, dim=-1).unsqueeze(0)
+class TokenGeneratorWithAttention:
+    def __init__(self, model_name="meta-llama/Llama-3.2-1B", window_size=50, attention_threshold=0.05):
+        # Load model and tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, output_attentions=True)
         
-        # Update context with new token and shift window if max length exceeded
-        generated = torch.cat([generated, next_token_id], dim=1)
-        if generated.shape[1] > max_window_size:
-            generated = generated[:, -max_window_size:]
+        # Configuration parameters
+        self.window_size = window_size
+        self.attention_threshold = attention_threshold
+
+    def generate_tokens_with_attention(self, input_text, max_tokens=10):
+        """
+        Generates tokens one by one, checking attention on the last tokens of the input.
         
-        # Update attention mask
-        attention_mask = torch.ones(generated.shape, device=generated.device)
-
-        # Decode the generated token and print if verbose
-        if verbose:
-            next_token = tokenizer.decode(next_token_id)
-            print(f"Generated Token: {next_token}")
+        Parameters:
+            input_text (str): The input text to analyze and generate tokens from.
+            max_tokens (int): Maximum number of tokens to generate.
         
-        # End generation if EOS token is generated
-        if next_token_id.item() == tokenizer.eos_token_id:
-            break
+        Returns:
+            tuple: A list of attention scores and the generated text.
+        """
+        generated_tokens = []
+        attention_scores_list = []
+        
+        # Tokenize the input text
+        input_ids = self.tokenizer(input_text, return_tensors="pt").input_ids
+        input_length = input_ids.shape[1]
 
-    # Decode final generated response
-    response = tokenizer.decode(generated[0], skip_special_tokens=True)
-    return response, token_attention_info
+        for _ in range(max_tokens):
+            # Ensure we only consider the last `window_size` tokens
+            current_window = input_ids[:, max(0, input_length - self.window_size):]
+            
+            # Generate one token
+            with torch.no_grad():
+                outputs = self.model(current_window, return_dict=True, output_attentions=True)
+                next_token_logits = outputs.logits[:, -1, :]
+                next_token_id = torch.argmax(next_token_logits, dim=-1)  # Get the token with the highest probability
 
-# Usage example
-prompt = "Explain the theory of relativity in simple terms."
-response, attention_data = generate_response(prompt, max_length=50, verbose=True)
-print("\nFinal Response:", response)
+            # Append the generated token to the list
+            generated_tokens.append(next_token_id.item())
+            
+            # Prepare for the next iteration by appending the new token
+            input_ids = torch.cat([current_window, next_token_id.unsqueeze(0).unsqueeze(0)], dim=1)
+            input_length += 1
+            
+            # Check attention scores for the last tokens
+            last_attention_scores = outputs.attentions[-1][:, :, -self.window_size:, -self.window_size:]  # Last layer's attention
+            avg_attention_scores = last_attention_scores.mean(dim=1).squeeze()  # Average over heads
+            
+            # Get the attention score for the newly generated token
+            last_token_attention = avg_attention_scores[-1].item()  # Attention on the last token
+            attention_scores_list.append(avg_attention_scores.tolist())  # Collect attention scores
+            
+            print(f"Attention on last token: {last_token_attention:.4f}")
 
-# Print attention information for a specific token in the first layer as an example
-layer_idx = 0  # First layer
-token_id_example = list(attention_data[layer_idx].keys())[0]  # Example token id from layer
-print(f"\nAttention details for token '{attention_data[layer_idx][token_id_example]['token']}' in Layer {layer_idx}:\n",
-      attention_data[layer_idx][token_id_example]["attention_scores"])
+            if last_token_attention < self.attention_threshold:
+                print("Insufficient attention on the last token, stopping generation.")
+                break  # Stop if attention is below the threshold
+
+        # Decode the generated tokens to strings
+        generated_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        return attention_scores_list, generated_text
+"""
+# Example usage
+token_generator = TokenGeneratorWithAttention(model_name="meta-llama/Llama-3.2-1B")
+input_text = "The llama wandered through the mountains."
+attention_scores, generated_output = token_generator.generate_tokens_with_attention(input_text, max_tokens=5)
+print("Attention Scores per Token:", attention_scores)
+print("Generated Output:", generated_output)
+"""
